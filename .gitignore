@@ -1,3 +1,6 @@
 GEMINI.md
 CLAUDE.md
 .claude/
+.venv/
+.env
+
