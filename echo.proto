@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package echo;
+
+message EchoMessage {
+  string name = 1;
+  string message = 2;
+}
+
+service EchoService {
+  // Bi-directional streaming: 'stream' on both request and response
+  rpc Chat(stream EchoMessage) returns (stream EchoMessage);
+}
