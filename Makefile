@@ -41,8 +41,9 @@ clean_cache:
 logs:
 	@echo "Tailing AWS startup logs..."
 	sudo tail -f /var/log/cloud-init-output.log
+
 run_quantized:
-	@echo "Starting Official Meta Llama 3.1 8B on G5..."
+	@echo "Starting Official Meta Llama 3.1 8B..."
 	uv run --env-file .env vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
 		--dtype bfloat16 \
 		--max-model-len 20000 \
