@@ -23,9 +23,10 @@ logs:
 	@echo "Tailing AWS startup logs..."
 	sudo tail -f /var/log/cloud-init-output.log
 
-run_q:
-	uv run --env-file .env python -m vllm.entrypoints.openai.api_server \
-	--model RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w8a8 \
-	--dtype auto \
-	--tensor-parallel-size 1
-	--max-model-len 4096
+run_quantized:
+	@echo "Starting Official Meta Llama 3.1 8B on G5..."
+	uv run --env-file .env vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
+		--dtype bfloat16 \
+		--max-model-len 20000 \
+		--gpu-memory-utilization 0.90 \
+		--enforce-eager

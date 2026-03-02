@@ -725,12 +725,14 @@ name = "dstn"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "lmcache" },
     { name = "vllm" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.13.3" },
     { name = "lmcache", specifier = ">=0.3.14" },
     { name = "vllm", specifier = ">=0.15.1" },
 ]
