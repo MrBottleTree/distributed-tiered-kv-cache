@@ -32,6 +32,9 @@ public:
 
     // Stores a block sent from Machine A
     Status Store(ServerContext* context, const KVCacheBlock* block, StoreResponse* response) override {
+
+        cout<<"GOT SOME DATA!"<<endl;
+        cout<<"Session ID: "<<block->metadata().session_id()<<endl;
         
         string path = resolve_block_path(
             block->metadata().session_id(),
