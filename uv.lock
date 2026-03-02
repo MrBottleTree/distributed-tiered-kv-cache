@@ -725,6 +725,7 @@ name = "dstn"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "grpcio" },
     { name = "grpcio-tools" },
     { name = "lmcache" },
@@ -733,6 +734,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.13.3" },
     { name = "grpcio", specifier = ">=1.78.0" },
     { name = "grpcio-tools", specifier = ">=1.78.0" },
     { name = "lmcache", specifier = ">=0.3.14" },
