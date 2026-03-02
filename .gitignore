@@ -4,3 +4,7 @@ CLAUDE.md
 .venv/
 .env
 hf_cache/
+py_client/
+cpp_server/
+cache/
+machine_b_server
