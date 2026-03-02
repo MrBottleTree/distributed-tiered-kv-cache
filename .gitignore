@@ -3,4 +3,4 @@ CLAUDE.md
 .claude/
 .venv/
 .env
-
+hf_cache/
