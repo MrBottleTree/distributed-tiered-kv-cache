@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package kvcache.v1;
+
+enum Precision {
+    PRECISION_UNSPECIFIED = 0;
+    PRECISION_FP16 = 1;
+    PRECISION_INT8 = 2;
+    PRECISION_INT4 = 3;
+}
+
+message CacheMetadata {
+	string session_id = 1;
+	int32 layer_id = 2;
+	repeated int64 token_ids = 3;
+	float mean_attention_score = 4;
+	int64 sequence_index = 5;
+}
+
+message KVTensor {
+	Precision precision = 1;
+	bytes data = 2;
+	repeated int32 shape = 3;
+	float scale = 4;
+	float zero_point = 5;
+}
+
+message KVCacheBlock {
+	CacheMetadata metadata = 1;
+	KVTensor key_tensor = 2;
+	KVTensor value_tensor = 3;
+}
+
+message ContextSignal {
+	string session_id = 1;
+  
+	oneof signal {
+		KVTensor query_vector = 2;
+		int64 request_sequence_id = 3;
+		PrefetchHint hint = 4;
+	}
+}
+
+message PrefetchHint {
+	int32 predicted_next_layer = 1;
+	repeated int64 likely_upcoming_tokens = 2;
+}
+
+message StoreResponse {
+	bool success = 1;
+	string message = 2;
+}
+
+service KVCacheService {
+	rpc Store(KVCacheBlock) returns (StoreResponse);
+
+	rpc StreamContext(stream ContextSignal) returns (stream KVCacheBlock);
+
+	rpc Fetch(ContextSignal) returns (KVCacheBlock);
+}
