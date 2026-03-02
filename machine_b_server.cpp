@@ -105,8 +105,8 @@ public:
     }
 };
 
-void RunServer() {
-    string address = "0.0.0.0:50051";
+void RunServer(string port) {
+    string address = "0.0.0.0:" + port;
     KVCacheServerImpl service;
 
     ServerBuilder builder;
@@ -118,7 +118,7 @@ void RunServer() {
     server->Wait();
 }
 
-int main() {
-    RunServer();
+int main(int argc, char* argv[]) {
+    RunServer(argv[1]);
     return 0;
 }
