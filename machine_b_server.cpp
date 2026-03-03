@@ -113,6 +113,12 @@ void RunServer(string port) {
     KVCacheServerImpl service;
 
     ServerBuilder builder;
+    // Increase max message size to 128MB using both methods for compatibility
+    builder.SetMaxReceiveMessageSize(128 * 1024 * 1024);
+    builder.SetMaxSendMessageSize(128 * 1024 * 1024);
+    builder.AddChannelArgument(GRPC_ARG_MAX_RECEIVE_MESSAGE_LENGTH, 128 * 1024 * 1024);
+    builder.AddChannelArgument(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, 128 * 1024 * 1024);
+
     builder.AddListeningPort(address, InsecureServerCredentials());
     builder.RegisterService(&service);
 
