@@ -41,7 +41,8 @@ public:
             block->metadata().sequence_index()
         );
 
-        ofstream output_file(path, ios::binary);
+        // Open in binary and append mode
+        ofstream output_file(path, ios::binary | ios::app);
         if (!output_file.is_open()) {
             response->set_success(false);
             response->set_message("Failed to open file: " + path);
