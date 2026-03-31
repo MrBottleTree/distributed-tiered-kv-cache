@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package kvcache;
+
+// ─────────────────────────────────────────────
+//  Precision enum
+// ─────────────────────────────────────────────
+enum Precision {
+  PRECISION_UNKNOWN = 0;
+  PRECISION_FP16    = 1;
+  PRECISION_BF16    = 2;
+  PRECISION_FP32    = 3;
+}
+
+// ─────────────────────────────────────────────
+//  Key  →  (model_id, num_tokens, prefix_hash)
+//
+//  num_tokens   — how many tokens this prefix covers.
+//                 Used server-side for length-ordered scanning.
+//
+//  prefix_hash  — sha256(token_ids[:num_tokens].tobytes())
+//                 Collision-resistant identity for this exact prefix.
+//
+//  prefix_chain — hashes of sub-prefixes at block boundaries
+//                 (e.g. every 64 tokens: hash(t[:64]), hash(t[:128])…)
+//                 Sent by the client on Store so the server can later
+//                 validate "is stored entry S a real prefix of query Q?"
+//                 without shipping all token IDs over the wire.
+// ─────────────────────────────────────────────
+message KVCacheKey {
+  string model_name = 1;
+  int32  world_size = 2;
+  int32  worker_id  = 3;
+  int64  chunk_hash = 4;
+}
+
+// ─────────────────────────────────────────────
+//  A single raw tensor  (key OR value, one layer)
+// ─────────────────────────────────────────────
+message KVTensor {
+  Precision      precision = 1;
+  bytes          data      = 2;   // raw bytes, row-major
+  repeated int32 shape     = 3;   // [num_heads, seq_len, head_dim]
+}
+
+// ─────────────────────────────────────────────
+//  One transformer layer's KV pair
+// ─────────────────────────────────────────────
+message LayerKV {
+  int32    layer_id     = 1;
+  KVTensor key_tensor   = 2;
+  KVTensor value_tensor = 3;
+}
+
+// ─────────────────────────────────────────────
+//  Value  →  all layers + token count
+// ─────────────────────────────────────────────
+message KVCacheValue {
+  repeated LayerKV layers     = 1;
+  int32            num_tokens = 2;
+}
+
+// ─────────────────────────────────────────────
+//  Store
+// ─────────────────────────────────────────────
+message StoreRequest {
+  KVCacheKey   key   = 1;
+  KVCacheValue value = 2;
+}
+
+message StoreResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+// ─────────────────────────────────────────────
+//  Fetch
+//  key.num_tokens  = upper bound; return the longest stored
+//                    prefix whose length <= num_tokens AND whose
+//                    token sequence is a genuine prefix of the query.
+//  matched_tokens  = actual length of the entry returned (0 on miss).
+// ─────────────────────────────────────────────
+message FetchRequest {
+  KVCacheKey key = 1;
+}
+
+message FetchResponse {
+  bool         found          = 1;
+  KVCacheValue value          = 2;   // empty when found == false
+  int32        matched_tokens = 3;   // tokens actually matched
+}
+
+// ─────────────────────────────────────────────
+//  Delete
+// ─────────────────────────────────────────────
+message DeleteRequest {
+  KVCacheKey key = 1;
+}
+
+message DeleteResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+// ─────────────────────────────────────────────
+//  Service
+// ─────────────────────────────────────────────
+service KVCacheService {
+  rpc Store  (StoreRequest)  returns (StoreResponse);
+  rpc Fetch  (FetchRequest)  returns (FetchResponse);
+  rpc Delete (DeleteRequest) returns (DeleteResponse);
+}
