@@ -96,14 +96,14 @@ def cuda_extension() -> tuple[list, dict]:
         "csrc/storage_backends/fs/connector.cpp",
     ]
     ext_modules = [
-        cpp_extension.CUDAExtension(
-            "lmcache.c_ops",
-            sources=cuda_sources,
-            extra_compile_args={
-                "cxx": [flag_cxx_abi, "-std=c++17"],
-                "nvcc": [flag_cxx_abi],
-            },
-        ),
+        # cpp_extension.CUDAExtension(
+        #     "lmcache.c_ops",
+        #     sources=cuda_sources,
+        #     extra_compile_args={
+        #         "cxx": [flag_cxx_abi, "-std=c++17"],
+        #         "nvcc": [flag_cxx_abi],
+        #     },
+        # ), TEMP REMOVING CUDA FOR TESTING RIGHT NOW
         cpp_extension.CppExtension(
             "lmcache.native_storage_ops",
             sources=storage_manager_sources,

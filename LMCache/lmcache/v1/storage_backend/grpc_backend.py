@@ -69,10 +69,10 @@ class GRPCBackend(StoragePluginInterface):
     ):
         for key, obj in zip(keys, objs):
             print("\n[DEBUG] PUT CALLED")
-            print("Key:", key)
-            print("Obj type:", type(obj))
-            print("Obj contents:", obj)
-            print("Obj attributes:", dir(obj))
+            # print("Key:", key)
+            # print("Obj type:", type(obj))
+            # print("Obj contents:", obj)
+            # print("Obj attributes:", dir(obj))
             self._store_one(key, obj)
             print("\n[DEBUG] PUT DONE maybe")
             if on_complete_callback:
@@ -132,9 +132,9 @@ class GRPCBackend(StoragePluginInterface):
 
     def get_blocking(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         print("\n[DEBUG] GET CALLED")
-        print("Key type:", type(key))
-        print("Key contents:", key)
-        print("Key attributes:", dir(key))
+        # print("Key type:", type(key))
+        # print("Key contents:", key)
+        # print("Key attributes:", dir(key))
         resp = self.stub.Fetch(
             kv_cache_pb2.FetchRequest(
                 key=self._convert_key(key)
@@ -191,7 +191,7 @@ class GRPCBackend(StoragePluginInterface):
         return True  # no-op
 
     def get_allocator_backend(self):
-        return None  # not needed for now
+       return self.local_cpu_backend   # not needed for now
 
     def close(self):
         self.channel.close()
