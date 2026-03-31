@@ -10,6 +10,7 @@ from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.storage_backend.DummyMemoryObj import DummyMemoryObj
 from lmcache.v1.storage_backend import kv_cache_pb2
 from lmcache.v1.storage_backend import kv_cache_pb2_grpc
+from lmcache.v1.memory_management import MemoryFormat, MemoryObj
 
 class GRPCBackend(StoragePluginInterface):
 
@@ -27,9 +28,6 @@ class GRPCBackend(StoragePluginInterface):
         self.channel = grpc.insecure_channel(self.server_addr)
         self.stub = kv_cache_pb2_grpc.KVCacheServiceStub(self.channel)
 
-    # ─────────────────────────────────────────────
-    # 🔑 KEY TRANSLATION (CRITICAL)
-    # ─────────────────────────────────────────────
     def _convert_key(self, key: CacheEngineKey):
         return kv_cache_pb2.KVCacheKey(
             model_name=key.model_name,
@@ -89,8 +87,8 @@ class GRPCBackend(StoragePluginInterface):
         tensor = obj.get_tensor(0)
 
         k_all = tensor[0]
-        print(tensor)
-        v_all = tensor[0]
+        # print(tensor)
+        v_all = tensor[1]
 
         layers = []
 
@@ -125,6 +123,12 @@ class GRPCBackend(StoragePluginInterface):
             layers=layers,
             num_tokens=obj.get_num_tokens()
         )
+        self.stub.Store(
+        kv_cache_pb2.StoreRequest(
+            key=self._convert_key(key),
+            value=kv_value
+        )
+    )
 
     def get_blocking(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         print("\n[DEBUG] GET CALLED")
@@ -140,7 +144,7 @@ class GRPCBackend(StoragePluginInterface):
         if not resp.found:
             return None
 
-        # ⚠️ YOU MUST CONVERT proto → MemoryObj
+        # I MUST CONVERT proto to MemoryObj please
         return self._convert_to_memory_obj(resp.value)
 
     def _convert_to_memory_obj(self, value):
@@ -162,7 +166,15 @@ class GRPCBackend(StoragePluginInterface):
 
         tensor = torch.stack([k_all, v_all], dim=0)
 
-        return DummyMemoryObj(tensor)
+        allocator = self.local_cpu_backend.get_allocator_backend()
+
+        memory_obj = allocator.allocate(
+            tensor.shape,
+            tensor.dtype,
+            fmt=MemoryFormat.KV_2LTD
+        )
+        memory_obj.tensor.copy_(tensor)
+        return memory_obj
 
     def remove(self, key: CacheEngineKey, force: bool = True) -> bool:
         resp = self.stub.Delete(

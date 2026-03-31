@@ -7,9 +7,9 @@ from lmcache.utils import CacheEngineKey
 from lmcache.v1.event_manager import EventManager
 from lmcache.v1.storage_backend.DummyMemoryObj import DummyMemoryObj
 import torch
-# ─────────────────────────────────────────────
+from lmcache.v1.memory_management import MemoryFormat, MemoryObj
+
 # 1. Setup config
-# ─────────────────────────────────────────────
 config = LMCacheEngineConfig()
 
 config.storage_plugins = ["grpc"]
@@ -45,7 +45,7 @@ storage_manager = StorageManager(
     event_manager=event_manager,
 )
 
-print("\n✅ StorageManager initialized")
+print("\nStorageManager initialized")
 print("Backends:", storage_manager.list_backends())
 
 # ─────────────────────────────────────────────
@@ -55,43 +55,38 @@ key = CacheEngineKey(
     model_name="test_model",
     world_size=1,
     worker_id=0,
-    chunk_hash=123,              # MUST be int
+    chunk_hash=123,              # MUST be int apparently
     dtype=torch.float32,
 )
 
-# ─────────────────────────────────────────────
-# 4. Create fake MemoryObj
-# ─────────────────────────────────────────────
-tensor = torch.randn(1, 8, 64, 64)  # fake KV-like tensor
+#creating random tensor for now to copy into memory obj
+tensor = torch.randn(2, 8, 64, 64)  # fake KV-like tensor
 
 # mem_obj = MemoryObj(
 #     tensor=tensor,
 #     fmt=MemoryFormat.KV_2LTD
 # )
-
-mem_obj = DummyMemoryObj(tensor)
-
-# ─────────────────────────────────────────────
-# 5. TEST PUT
-# ─────────────────────────────────────────────
-# print("\n🚀 TESTING PUT")
-# storage_manager.batched_put([key], [mem_obj])
+local_cpu_backend = list(storage_manager.storage_backends.values())[0]
+allocator = local_cpu_backend.get_allocator_backend()
+memory_obj = allocator.allocate(
+    tensor.shape,
+    tensor.dtype,
+    fmt=MemoryFormat.KV_2LTD
+)
+memory_obj.tensor.copy_(tensor)
 
 backend = list(storage_manager.storage_backends.values())[1]
 
-print("\n🚀 DIRECT PUT")
-print(mem_obj.get_tensor)
-backend.batched_submit_put_task([key], [mem_obj])
+print("\n DIRECT PUT")
+print(memory_obj.get_tensor)
+backend.batched_submit_put_task([key], [memory_obj])
 
-print("\n🚀 DIRECT GET")
+print("\n DIRECT GET")
 result = backend.get_blocking(key)
-
+result.ref_count_down()
 print("Result:", result)
 
-# ─────────────────────────────────────────────
-# 6. TEST GET
-# ─────────────────────────────────────────────
-print("\n🚀 TESTING GET")
+print("\n TESTING GET")
 result = storage_manager.get(key)
 
 print("\nResult:", result)
