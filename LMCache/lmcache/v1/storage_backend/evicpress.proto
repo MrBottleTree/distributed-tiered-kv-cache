@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package evicpress;
+
+// EvicPressService is Machine B's gRPC interface.
+// Machine A calls these to store, retrieve, prefetch, and inspect KV cache blocks.
+service EvicPressService {
+  // Lookup: check if a block exists and which tier it's in. O(1).
+  rpc Lookup (LookupRequest) returns (LookupResponse);
+
+  // Store: save a KV block from Machine A. Machine B decides placement.
+  rpc Store (StoreRequest) returns (StoreResponse);
+
+  // Retrieve: fetch a KV block's data. Promotes tier3->tier2 opportunistically.
+  rpc Retrieve (RetrieveRequest) returns (RetrieveResponse);
+
+  // Prefetch: hint Machine B to move blocks to faster tiers proactively.
+  rpc Prefetch (PrefetchRequest) returns (PrefetchResponse);
+
+  // Delete: remove a block explicitly (e.g., context invalidated).
+  rpc Delete (DeleteRequest) returns (DeleteResponse);
+
+  // GetStats: pull current cache stats for monitoring.
+  rpc GetStats (StatsRequest) returns (StatsResponse);
+}
+
+// --- Lookup ---
+message LookupRequest {
+  string block_id = 1;
+}
+message LookupResponse {
+  bool hit    = 1;
+  int32 tier  = 2;  // 0 = miss, 2 = RAM, 3 = Disk
+}
+
+// --- Store ---
+message StoreRequest {
+  string block_id     = 1;
+  bytes  data         = 2;  // Serialized KV tensor (opaque bytes)
+  float  quality_score = 3; // 0.0–1.0. How sensitive this block is to compression.
+}
+message StoreResponse {
+  bool   success = 1;
+  int32  tier    = 2;  // Which tier it ended up in
+  string message = 3;  // Optional debug message
+}
+
+// --- Retrieve ---
+message RetrieveRequest {
+  string block_id = 1;
+}
+message RetrieveResponse {
+  bool   found = 1;
+  bytes  data  = 2;
+  int32  tier  = 3;  // Tier from which it was retrieved
+}
+
+// --- Prefetch ---
+message PrefetchRequest {
+  repeated string block_ids = 1;  // Blocks to move to faster tiers
+}
+message PrefetchResponse {
+  int32 queued = 1;  // How many were accepted into the prefetch queue
+}
+
+// --- Delete ---
+message DeleteRequest {
+  string block_id = 1;
+}
+message DeleteResponse {
+  bool success = 1;
+}
+
+// --- Stats ---
+message StatsRequest {}
+message StatsResponse {
+  int64 tier2_blocks  = 1;
+  int64 tier3_blocks  = 2;
+  int64 tier2_bytes   = 3;
+  int64 tier3_bytes   = 4;
+  int64 total_hits    = 5;
+  int64 total_misses  = 6;
+  int64 tier2_hits    = 7;
+  int64 tier3_hits    = 8;
+  float hit_rate      = 9;
+  int64 evictions     = 10;
+}

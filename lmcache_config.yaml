@@ -1,3 +1,10 @@
+# ============================================================
+# LMCache config for Machine A — gRPC plugin → Machine B
+# ============================================================
+# Machine B must be running before starting Machine A:
+#   cd machine_b && make run
+# ============================================================
+
 storage_plugins:
   - grpc
 
@@ -5,9 +12,20 @@ extra_config:
   storage_plugin.grpc.module_path: lmcache.v1.storage_backend.grpc_backend
   storage_plugin.grpc.class_name: GRPCBackend
 
-  # Pointing to Machine B
-  grpc_server: "172.25.160.246:8080"
+  # Machine B address — update to the actual IP when running on separate hosts.
+  grpc_server: "localhost:50051"
+
+  # How sensitive KV blocks are to compression (0.0–1.0).
+  # 1.0 = preserve quality; lower = Machine B may compress more aggressively.
+  # No effect yet — compression is not implemented in Machine B.
+  grpc_quality_score: 1.0
+
+  # Maximum gRPC message size in bytes (must match machine_b/config/config.yaml).
+  grpc_max_message_bytes: 536870912  # 512 MB
 
 enable_pd: false
+
+# Local hot cache on Machine A (Tier 1). Blocks served from here before
+# going to Machine B over the network.
 local_cpu: true
-max_local_cpu_size: 64
+max_local_cpu_size: 8   # GB — keep this smaller than your actual RAM

@@ -1,197 +1,228 @@
-import grpc
-from typing import Optional, List, Sequence
+"""
+GRPCBackend — LMCache storage plugin that talks to Machine B (EvicPress).
+
+Implements the StoragePluginInterface so LMCache's StorageManager can route
+KV cache blocks to the remote EvicPress tiered storage node over gRPC.
+
+Serialization:
+  KV tensors are serialized with torch.save() into raw bytes. Machine B stores
+  them opaquely — it has no knowledge of tensor shapes or dtypes. On retrieval,
+  torch.load() reconstructs the original tensor exactly.
+
+Key encoding:
+  CacheEngineKey (model_name, world_size, worker_id, chunk_hash, dtype) is
+  encoded as a canonical pipe-separated string, which becomes Machine B's
+  block_id.
+
+Prefetch:
+  When contains() detects a block in Tier 3 (disk), it fires a non-blocking
+  Prefetch RPC to hint Machine B to promote it to Tier 2 (RAM) before the
+  imminent get_blocking() call.
+"""
+
+import io
+from typing import Callable, List, Optional, Sequence, Union
 from concurrent.futures import Future
-import numpy as np
+
 import torch
-from lmcache.v1.storage_backend.abstract_backend import StorageBackendInterface
-from lmcache.v1.storage_backend.abstract_backend import StoragePluginInterface
+import grpc
+
 from lmcache.utils import CacheEngineKey
-from lmcache.v1.memory_management import MemoryObj
-from lmcache.v1.storage_backend.DummyMemoryObj import DummyMemoryObj
-from lmcache.v1.storage_backend import kv_cache_pb2
-from lmcache.v1.storage_backend import kv_cache_pb2_grpc
 from lmcache.v1.memory_management import MemoryFormat, MemoryObj
+from lmcache.v1.storage_backend.abstract_backend import StoragePluginInterface
+from lmcache.v1.storage_backend import evicpress_pb2
+from lmcache.v1.storage_backend import evicpress_pb2_grpc
+
 
 class GRPCBackend(StoragePluginInterface):
 
     def __init__(
-    self,
-    dst_device="cuda",
-    config=None,
-    metadata=None,
-    local_cpu_backend=None,
-    loop=None,
-):
+        self,
+        dst_device: str = "cuda",
+        config=None,
+        metadata=None,
+        local_cpu_backend=None,
+        loop=None,
+    ):
         super().__init__(dst_device, config, metadata, local_cpu_backend, loop)
 
-        self.server_addr = config.extra_config.get("grpc_server")
-        self.channel = grpc.insecure_channel(self.server_addr)
-        self.stub = kv_cache_pb2_grpc.KVCacheServiceStub(self.channel)
+        self.server_addr = config.extra_config.get("grpc_server", "localhost:50051")
 
-    def _convert_key(self, key: CacheEngineKey):
-        return kv_cache_pb2.KVCacheKey(
-            model_name=key.model_name,
-            world_size=key.world_size,
-            worker_id=key.worker_id,
-            chunk_hash=key.chunk_hash
+        # quality_score sent to Machine B for every block.
+        # 1.0 = highly sensitive to compression (preserve as-is).
+        # Tune this once the compression profiler is wired up.
+        self._quality_score: float = float(
+            config.extra_config.get("grpc_quality_score", 1.0)
         )
-        
 
-    #     def _convert_key(self, key: CacheEngineKey):
-    # return kv_cache_pb2.KVCacheKey(
-    #     model_id=str(key.model_id) if hasattr(key, "model_id") else "unknown",
-    #     prefix_hash=str(hash(key)),   # TEMP fallback
-    #     num_tokens=0,                 # TEMP
-    #     prefix_chain=[]
-    # )
+        max_msg = int(
+            config.extra_config.get("grpc_max_message_bytes", 512 * 1024 * 1024)
+        )
+        options = [
+            ("grpc.max_receive_message_length", max_msg),
+            ("grpc.max_send_message_length",    max_msg),
+        ]
+        self.channel = grpc.insecure_channel(self.server_addr, options=options)
+        self.stub    = evicpress_pb2_grpc.EvicPressServiceStub(self.channel)
+        print(f"[GRPCBackend] connected to Machine B at {self.server_addr}")
 
-    # ─────────────────────────────────────────────
-    # REQUIRED METHODS
-    # ─────────────────────────────────────────────
+    # ------------------------------------------------------------------ #
+    #  Key encoding                                                        #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _encode_key(key: CacheEngineKey) -> str:
+        """
+        Canonical string block_id for Machine B.
+        Pipe-separated so no field value can collide with the separator.
+        """
+        return f"{key.model_name}|{key.world_size}|{key.worker_id}|{key.chunk_hash}|{key.kv_dtype}"
+
+    # ------------------------------------------------------------------ #
+    #  Tensor serialization                                                #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _tensor_to_bytes(tensor: torch.Tensor) -> bytes:
+        """Serialize a tensor to bytes, preserving shape and dtype."""
+        buf = io.BytesIO()
+        torch.save(tensor.cpu(), buf)
+        return buf.getvalue()
+
+    @staticmethod
+    def _bytes_to_tensor(data: bytes) -> torch.Tensor:
+        """Deserialize bytes back to a tensor."""
+        buf = io.BytesIO(data)
+        return torch.load(buf, weights_only=True)
+
+    # ------------------------------------------------------------------ #
+    #  StorageBackendInterface implementation                              #
+    # ------------------------------------------------------------------ #
 
     def contains(self, key: CacheEngineKey, pin: bool = False) -> bool:
-        resp = self.stub.Fetch(
-            kv_cache_pb2.FetchRequest(
-                key=self._convert_key(key)
+        """
+        O(1) existence check via Machine B's Lookup RPC.
+        If the block is in Tier 3 (disk), fire a non-blocking Prefetch hint
+        so Machine B can promote it to RAM before the upcoming get_blocking().
+        """
+        block_id = self._encode_key(key)
+        try:
+            resp = self.stub.Lookup(
+                evicpress_pb2.LookupRequest(block_id=block_id)
             )
-        )
-        return resp.found
+        except grpc.RpcError as e:
+            print(f"[GRPCBackend] Lookup failed for {block_id[:32]}…: {e.details()}")
+            return False
+
+        if resp.hit and resp.tier == 3:
+            # Fire-and-forget prefetch: promotes block from disk → RAM
+            # before get_blocking() is called. Does not block here.
+            self.stub.Prefetch.future(
+                evicpress_pb2.PrefetchRequest(block_ids=[block_id])
+            )
+
+        return resp.hit
 
     def exists_in_put_tasks(self, key: CacheEngineKey) -> bool:
-        return False  # we do synchronous puts
+        return False  # puts are synchronous; nothing is pending
 
     def batched_submit_put_task(
         self,
         keys: Sequence[CacheEngineKey],
         objs: List[MemoryObj],
         transfer_spec=None,
-        on_complete_callback=None,
-    ):
+        on_complete_callback: Optional[Callable[[CacheEngineKey], None]] = None,
+    ) -> None:
+        """Store KV blocks in Machine B. Synchronous (simple, correct)."""
         for key, obj in zip(keys, objs):
-            print("\n[DEBUG] PUT CALLED")
-            # print("Key:", key)
-            # print("Obj type:", type(obj))
-            # print("Obj contents:", obj)
-            # print("Obj attributes:", dir(obj))
             self._store_one(key, obj)
-            print("\n[DEBUG] PUT DONE maybe")
             if on_complete_callback:
-                on_complete_callback(key)
+                try:
+                    on_complete_callback(key)
+                except Exception as e:
+                    print(f"[GRPCBackend] on_complete_callback error: {e}")
+        return None
 
-        return None  # synchronous
-
-    def _store_one(self, key: CacheEngineKey, obj: MemoryObj):
+    def _store_one(self, key: CacheEngineKey, obj: MemoryObj) -> None:
         """
-        Convert MemoryObj → KVCacheValue and store via gRPC
+        Serialize one MemoryObj and send it to Machine B via Store RPC.
+
+        The full KV tensor (shape [2, num_layers, num_tokens, heads, head_dim]
+        in KV_2LTD format) is serialized with torch.save and sent as opaque
+        bytes. Machine B doesn't inspect the bytes — it just stores them.
         """
-        tensor = obj.get_tensor(0)
-         print(f"[GRPC PUT] chunk={key.chunk_hash}") #debugging
-        k_all = tensor[0]
-        # print(tensor)
-        v_all = tensor[1]
+        block_id = self._encode_key(key)
+        tensor   = obj.get_tensor(0)           # [2, L, T, H, D] or similar
+        data     = self._tensor_to_bytes(tensor)
 
-        layers = []
-
-        for layer_id in range(k_all.shape[0]):
-            k = k_all[layer_id]
-            v = v_all[layer_id]
-
-            k_np = k.cpu().numpy()
-            v_np = v.cpu().numpy()
-
-            k_proto = kv_cache_pb2.KVTensor(
-                precision=kv_cache_pb2.PRECISION_FP32,
-                data=k_np.tobytes(),
-                shape=list(k_np.shape)
-            )
-
-            v_proto = kv_cache_pb2.KVTensor(
-                precision=kv_cache_pb2.PRECISION_FP32,
-                data=v_np.tobytes(),
-                shape=list(v_np.shape)
-            )
-
-            layers.append(
-                kv_cache_pb2.LayerKV(
-                    layer_id=layer_id,
-                    key_tensor=k_proto,
-                    value_tensor=v_proto
+        print(f"[GRPCBackend] PUT block={block_id[:32]}… size={len(data)//1024}KB")
+        try:
+            resp = self.stub.Store(
+                evicpress_pb2.StoreRequest(
+                    block_id=block_id,
+                    data=data,
+                    quality_score=self._quality_score,
                 )
             )
-
-        kv_value = kv_cache_pb2.KVCacheValue(
-            layers=layers,
-            num_tokens=obj.get_num_tokens()
-        )
-        self.stub.Store(
-        kv_cache_pb2.StoreRequest(
-            key=self._convert_key(key),
-            value=kv_value
-        )
-    )
+            if not resp.success:
+                print(f"[GRPCBackend] Store failed: {resp.message}")
+        except grpc.RpcError as e:
+            print(f"[GRPCBackend] Store RPC error: {e.details()}")
 
     def get_blocking(self, key: CacheEngineKey) -> Optional[MemoryObj]:
-        print(f"[GRPC GET] chunk={key.chunk_hash}") #debugging
-        # print("Key type:", type(key))
-        # print("Key contents:", key)
-        # print("Key attributes:", dir(key))
-        resp = self.stub.Fetch(
-            kv_cache_pb2.FetchRequest(
-                key=self._convert_key(key)
+        """
+        Fetch a KV block from Machine B and reconstruct a MemoryObj.
+        Returns None on miss. Machine B handles tier selection internally
+        (Tier 2 RAM preferred, falls back to Tier 3 disk).
+        """
+        block_id = self._encode_key(key)
+        print(f"[GRPCBackend] GET block={block_id[:32]}…")
+        try:
+            resp = self.stub.Retrieve(
+                evicpress_pb2.RetrieveRequest(block_id=block_id)
             )
-        )
+        except grpc.RpcError as e:
+            print(f"[GRPCBackend] Retrieve RPC error: {e.details()}")
+            return None
 
         if not resp.found:
             return None
 
-        # I MUST CONVERT proto to MemoryObj please
-        return self._convert_to_memory_obj(resp.value)
+        tensor = self._bytes_to_tensor(resp.data)
 
-    def _convert_to_memory_obj(self, value):
-
-        k_list = []
-        v_list = []
-
-        for layer in value.layers:
-            shape = list(layer.key_tensor.shape)
-
-            k_np = np.frombuffer(layer.key_tensor.data, dtype=np.float32).reshape(shape)
-            v_np = np.frombuffer(layer.value_tensor.data, dtype=np.float32).reshape(shape)
-
-            k_list.append(torch.from_numpy(k_np))
-            v_list.append(torch.from_numpy(v_np))
-
-        k_all = torch.stack(k_list, dim=0)
-        v_all = torch.stack(v_list, dim=0)
-
-        tensor = torch.stack([k_all, v_all], dim=0)
-
-        allocator = self.local_cpu_backend.get_allocator_backend()
-
+        # Allocate a MemoryObj in local CPU memory and copy the tensor in.
+        allocator  = self.local_cpu_backend.get_allocator_backend()
         memory_obj = allocator.allocate(
             tensor.shape,
             tensor.dtype,
-            fmt=MemoryFormat.KV_2LTD
+            fmt=MemoryFormat.KV_2LTD,
         )
+        if memory_obj is None:
+            print("[GRPCBackend] allocator returned None — out of local CPU memory")
+            return None
+
         memory_obj.tensor.copy_(tensor)
         return memory_obj
 
     def remove(self, key: CacheEngineKey, force: bool = True) -> bool:
-        resp = self.stub.Delete(
-            kv_cache_pb2.DeleteRequest(
-                key=self._convert_key(key)
+        block_id = self._encode_key(key)
+        try:
+            resp = self.stub.Delete(
+                evicpress_pb2.DeleteRequest(block_id=block_id)
             )
-        )
-        return resp.success
+            return resp.success
+        except grpc.RpcError as e:
+            print(f"[GRPCBackend] Delete RPC error: {e.details()}")
+            return False
 
     def pin(self, key: CacheEngineKey) -> bool:
-        return True  # no-op
+        return True   # Machine B manages eviction; no pin concept yet
 
     def unpin(self, key: CacheEngineKey) -> bool:
-        return True  # no-op
+        return True
 
     def get_allocator_backend(self):
-       return self.local_cpu_backend   # not needed for now
+        return self.local_cpu_backend
 
-    def close(self):
+    def close(self) -> None:
         self.channel.close()
