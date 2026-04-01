@@ -18,7 +18,7 @@ config.extra_config = {
     "storage_plugin.grpc.module_path": "lmcache.v1.storage_backend.grpc_backend",
     "storage_plugin.grpc.class_name": "GRPCBackend",
     "grpc_server": "127.0.0.1:8080",
-}
+} #replace with actual server ip
 
 config.enable_pd = False
 config.local_cpu = True

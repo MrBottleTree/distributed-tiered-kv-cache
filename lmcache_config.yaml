@@ -1,0 +1,13 @@
+storage_plugins:
+  - grpc
+
+extra_config:
+  storage_plugin.grpc.module_path: lmcache.v1.storage_backend.grpc_backend
+  storage_plugin.grpc.class_name: GRPCBackend
+
+  # Pointing to Machine B
+  grpc_server: "172.25.160.246:8080"
+
+enable_pd: false
+local_cpu: true
+max_local_cpu_size: 64

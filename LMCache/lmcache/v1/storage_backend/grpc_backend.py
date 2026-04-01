@@ -85,7 +85,7 @@ class GRPCBackend(StoragePluginInterface):
         Convert MemoryObj → KVCacheValue and store via gRPC
         """
         tensor = obj.get_tensor(0)
-
+         print(f"[GRPC PUT] chunk={key.chunk_hash}") #debugging
         k_all = tensor[0]
         # print(tensor)
         v_all = tensor[1]
@@ -131,7 +131,7 @@ class GRPCBackend(StoragePluginInterface):
     )
 
     def get_blocking(self, key: CacheEngineKey) -> Optional[MemoryObj]:
-        print("\n[DEBUG] GET CALLED")
+        print(f"[GRPC GET] chunk={key.chunk_hash}") #debugging
         # print("Key type:", type(key))
         # print("Key contents:", key)
         # print("Key attributes:", dir(key))

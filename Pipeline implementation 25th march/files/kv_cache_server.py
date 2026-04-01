@@ -13,7 +13,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "py_client"))
 import kv_cache_pb2
 import kv_cache_pb2_grpc
 
-LISTEN_ADDR = "127.0.0.1:8080"
+LISTEN_ADDR = "0.0.0.0:8080"
 
 
 class KVCacheServicer(kv_cache_pb2_grpc.KVCacheServiceServicer):
