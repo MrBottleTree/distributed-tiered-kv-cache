@@ -1,11 +1,16 @@
 from vllm import LLM, SamplingParams
+import os
 import time
 
-# 🔥 Initialize vLLM with LMCache
+# LMCache reads its config from this env var.
+# Can also be set before launching: LMCACHE_CONFIG_FILE=lmcache_config.yaml python run_vllm_hopefully.py
+os.environ.setdefault("LMCACHE_CONFIG_FILE", "lmcache_config.yaml")
+
+# Initialize vLLM. enable_prefix_caching lets vLLM reuse KV blocks
+# for shared prompt prefixes — LMCache intercepts these via its storage hooks.
 llm = LLM(
-    model="meta-llama/Llama-2-7b-hf",  # or smaller model if needed
+    model="meta-llama/Llama-2-7b-hf",
     enable_prefix_caching=True,
-    lmcache_config="lmcache_config.yaml",
 )
 
 sampling_params = SamplingParams(
