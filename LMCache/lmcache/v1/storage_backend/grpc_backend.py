@@ -21,6 +21,7 @@ Prefetch:
 """
 
 import io
+import threading
 from typing import Callable, List, Optional, Sequence, Union
 from concurrent.futures import Future
 
@@ -65,6 +66,10 @@ class GRPCBackend(StoragePluginInterface):
         self.channel = grpc.insecure_channel(self.server_addr, options=options)
         self.stub    = evicpress_pb2_grpc.EvicPressServiceStub(self.channel)
         print(f"[GRPCBackend] connected to Machine B at {self.server_addr}")
+
+        # Registry of T1-promoted blocks: block_id → CacheEngineKey
+        # Needed to fetch & return data to Machine B when EvicPress evicts from T1.
+        self._t1_key_registry: dict[str, "CacheEngineKey"] = {}
 
     # ------------------------------------------------------------------ #
     #  Key encoding                                                        #
@@ -121,6 +126,12 @@ class GRPCBackend(StoragePluginInterface):
                 evicpress_pb2.PrefetchRequest(block_ids=[block_id])
             )
 
+        # Process any T1 eviction commands from Machine B (fire-and-forget)
+        for bid in resp.evict_from_t1:
+            threading.Thread(
+                target=self._return_t1_block, args=(bid,), daemon=True
+            ).start()
+
         return resp.hit
 
     def exists_in_put_tasks(self, key: CacheEngineKey) -> bool:
@@ -170,7 +181,16 @@ class GRPCBackend(StoragePluginInterface):
                 # Machine B decided this block belongs in Machine A RAM (Tier 1).
                 # Write the original MemoryObj into LocalCPUBackend directly.
                 print(f"[GRPCBackend] Tier1 promote {block_id[:32]}…")
+                self._t1_key_registry[block_id] = key
                 self.local_cpu_backend.submit_put_task(key, obj)
+            else:
+                # Not in T1 — remove stale registry entry if present
+                self._t1_key_registry.pop(block_id, None)
+
+            # Process any T1 eviction commands from Machine B
+            for bid in resp.evict_from_t1:
+                self._return_t1_block(bid)
+
         except grpc.RpcError as e:
             print(f"[GRPCBackend] Store RPC error: {e.details()}")
 
@@ -221,6 +241,33 @@ class GRPCBackend(StoragePluginInterface):
                 fmt=MemoryFormat.KV_2LTD,
             )
             return TensorMemoryObj(raw_data, meta, parent_allocator=None)
+
+    def _return_t1_block(self, block_id: str) -> None:
+        """
+        Evict a block from Machine A's T1 (local_cpu_backend) and return the
+        data to Machine B so it can store it in T2/T3.
+        Called when Machine B sends evict_from_t1 commands in responses.
+        """
+        key = self._t1_key_registry.pop(block_id, None)
+        if key is None or self.local_cpu_backend is None:
+            return  # stale command or no T1 available
+        try:
+            obj = self.local_cpu_backend.get_blocking(key)
+            if obj is None:
+                return  # already evicted by Machine A's own LRU
+            data = self._tensor_to_bytes(obj.get_tensor(0))
+            print(f"[GRPCBackend] T1 return {block_id[:32]}… size={len(data)//1024}KB")
+            self.stub.Store(
+                evicpress_pb2.StoreRequest(
+                    block_id=block_id,
+                    data=data,
+                    quality_score=self._quality_score,
+                    is_t1_return=True,
+                )
+            )
+            self.local_cpu_backend.remove(key)
+        except Exception as e:
+            print(f"[GRPCBackend] T1 return failed for {block_id[:32]}…: {e}")
 
     def remove(self, key: CacheEngineKey, force: bool = True) -> bool:
         block_id = self._encode_key(key)

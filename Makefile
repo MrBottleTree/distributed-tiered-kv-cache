@@ -6,7 +6,7 @@ CFG        := lmcache_config.yaml
 MACHINE_B  ?= 172.31.0.80
 LOG        := $(HOME)/vllm.log
 
-.PHONY: help setup run run-stress test-grpc logs status stop ping-b chat
+.PHONY: help setup proto run run-stress test-grpc logs status stop ping-b chat
 
 help:         ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*##"}{printf "  %-14s %s\n",$$1,$$2}'
@@ -16,6 +16,16 @@ help:         ## Show this help
 setup:        ## Install LMCache from source + pip dependencies
 	source $(VENV) && pip install -e $(LMCACHE) && pip install -r requirements.txt
 	@echo "[setup] done"
+
+PROTO_DIR  := $(LMCACHE)/lmcache/v1/storage_backend
+
+proto:        ## (Re)generate gRPC Python stubs from evicpress.proto
+	source $(VENV) && cd $(PROTO_DIR) && python -m grpc_tools.protoc \
+		-I . \
+		--python_out=. \
+		--grpc_python_out=. \
+		evicpress.proto
+	@echo "[proto] stubs regenerated in $(PROTO_DIR)/"
 
 # ── Run ────────────────────────────────────────────────────────────────────────
 
