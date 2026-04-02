@@ -440,6 +440,12 @@ class StorageManager:
                 if backend_name in self._bypassed_backends:
                     continue
 
+            # Tier 1 (Machine A RAM) is controlled by Machine B.
+            # GRPCBackend writes to LocalCPUBackend only when Machine B signals
+            # tier=1 in StoreResponse. Skip the broadcast PUT here.
+            if backend_name == "LocalCPUBackend":
+                continue
+
             allocator_backend = backend.get_allocator_backend()
             cname = get_backend_cname(allocator_backend)
             if cname not in obj_dict:

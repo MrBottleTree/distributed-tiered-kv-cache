@@ -76,7 +76,7 @@ class GRPCBackend(StoragePluginInterface):
         Canonical string block_id for Machine B.
         Pipe-separated so no field value can collide with the separator.
         """
-        return f"{key.model_name}|{key.world_size}|{key.worker_id}|{key.chunk_hash}|{key.kv_dtype}"
+        return f"{key.model_name}|{key.world_size}|{key.worker_id}|{key.chunk_hash}|{key.dtype}"
 
     # ------------------------------------------------------------------ #
     #  Tensor serialization                                                #
@@ -86,7 +86,7 @@ class GRPCBackend(StoragePluginInterface):
     def _tensor_to_bytes(tensor: torch.Tensor) -> bytes:
         """Serialize a tensor to bytes, preserving shape and dtype."""
         buf = io.BytesIO()
-        torch.save(tensor.cpu(), buf)
+        torch.save(tensor.clone().cpu(), buf)
         return buf.getvalue()
 
     @staticmethod
@@ -166,6 +166,11 @@ class GRPCBackend(StoragePluginInterface):
             )
             if not resp.success:
                 print(f"[GRPCBackend] Store failed: {resp.message}")
+            elif resp.tier == 1 and self.local_cpu_backend is not None:
+                # Machine B decided this block belongs in Machine A RAM (Tier 1).
+                # Write the original MemoryObj into LocalCPUBackend directly.
+                print(f"[GRPCBackend] Tier1 promote {block_id[:32]}…")
+                self.local_cpu_backend.submit_put_task(key, obj)
         except grpc.RpcError as e:
             print(f"[GRPCBackend] Store RPC error: {e.details()}")
 
