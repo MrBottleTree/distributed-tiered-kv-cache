@@ -1,16 +1,22 @@
 from vllm import LLM, SamplingParams
+from vllm.config import KVTransferConfig
 import os
 import time
 
 # LMCache reads its config from this env var.
-# Can also be set before launching: LMCACHE_CONFIG_FILE=lmcache_config.yaml python run_vllm_hopefully.py
 os.environ.setdefault("LMCACHE_CONFIG_FILE", "lmcache_config.yaml")
 
-# Initialize vLLM. enable_prefix_caching lets vLLM reuse KV blocks
-# for shared prompt prefixes — LMCache intercepts these via its storage hooks.
+# Initialize vLLM with LMCacheConnectorV1 wired in.
+# kv_transfer_config activates the connector — without it, LMCACHE_CONFIG_FILE
+# is never read and LMCache is silently skipped.
 llm = LLM(
-    model="meta-llama/Llama-2-7b-hf",
+    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
     enable_prefix_caching=True,
+    max_model_len=16384,
+    kv_transfer_config=KVTransferConfig(
+        kv_connector="LMCacheConnectorV1",
+        kv_role="kv_both",
+    ),
 )
 
 sampling_params = SamplingParams(
@@ -22,8 +28,23 @@ sampling_params = SamplingParams(
 # Test prompts
 # ─────────────────────────────────────────────
 
-prompt1 = "The capital of India is"
-prompt2 = "The capital of India is"  # identical → should hit cache
+# Long shared prefix (>256 tokens) so LMCache forms at least one full chunk
+# and sends it to Machine B over gRPC.
+_context = (
+    "You are a knowledgeable assistant with deep expertise in world geography, "
+    "history, politics, and culture. When answering questions, you always provide "
+    "detailed, accurate, and well-structured responses. You draw on a wide range of "
+    "sources and consider multiple perspectives before giving your answer. "
+    "Your goal is to educate and inform the user as thoroughly as possible, "
+    "referencing relevant historical context, geographical facts, political systems, "
+    "cultural traditions, and economic factors where applicable. "
+    "You are patient, thorough, and always cite specific details to support your points. "
+    "You also acknowledge when a topic is complex or when there are multiple valid "
+    "viewpoints, and you strive to present a balanced and nuanced answer. "
+    "Here is the user's question: "
+)
+prompt1 = _context + "What is the capital of India and why is it historically significant?"
+prompt2 = _context + "What is the capital of India and why is it historically significant?"  # identical → cache hit
 
 # ─────────────────────────────────────────────
 # First run (MISS → STORE)

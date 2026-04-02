@@ -1,8 +1,7 @@
 # ============================================================
 # LMCache config for Machine A — gRPC plugin → Machine B
 # ============================================================
-# Machine B must be running before starting Machine A:
-#   cd machine_b && make run
+# Machine B must be running before starting Machine A.
 # ============================================================
 
 storage_plugins:
@@ -13,19 +12,20 @@ extra_config:
   storage_plugin.grpc.class_name: GRPCBackend
 
   # Machine B address — update to the actual IP when running on separate hosts.
-  grpc_server: "localhost:50051"
+  grpc_server: "172.31.7.166:50051"
 
-  # How sensitive KV blocks are to compression (0.0–1.0).
-  # 1.0 = preserve quality; lower = Machine B may compress more aggressively.
-  # No effect yet — compression is not implemented in Machine B.
   grpc_quality_score: 1.0
 
   # Maximum gRPC message size in bytes (must match machine_b/config/config.yaml).
   grpc_max_message_bytes: 536870912  # 512 MB
 
+save_unfull_chunk: true
+
 enable_pd: false
 
-# Local hot cache on Machine A (Tier 1). Blocks served from here before
-# going to Machine B over the network.
+# LocalCPUBackend is required as a staging allocator for tensors received from
+# Machine B via gRPC. Even though all persistent storage is on Machine B,
+# LMCache needs this buffer to reconstruct MemoryObj on retrieval.
+# 2 GB is sufficient for staging; it does NOT act as a local KV cache tier.
 local_cpu: true
-max_local_cpu_size: 8   # GB — keep this smaller than your actual RAM
+max_local_cpu_size: 2

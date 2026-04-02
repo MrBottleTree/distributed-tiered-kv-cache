@@ -190,19 +190,32 @@ class GRPCBackend(StoragePluginInterface):
 
         tensor = self._bytes_to_tensor(resp.data)
 
-        # Allocate a MemoryObj in local CPU memory and copy the tensor in.
-        allocator  = self.local_cpu_backend.get_allocator_backend()
-        memory_obj = allocator.allocate(
-            tensor.shape,
-            tensor.dtype,
-            fmt=MemoryFormat.KV_2LTD,
-        )
-        if memory_obj is None:
-            print("[GRPCBackend] allocator returned None — out of local CPU memory")
-            return None
-
-        memory_obj.tensor.copy_(tensor)
-        return memory_obj
+        if self.local_cpu_backend is not None:
+            # Allocate a MemoryObj via the local CPU allocator and copy tensor in.
+            allocator  = self.local_cpu_backend.get_allocator_backend()
+            memory_obj = allocator.allocate(
+                tensor.shape,
+                tensor.dtype,
+                fmt=MemoryFormat.KV_2LTD,
+            )
+            if memory_obj is None:
+                print("[GRPCBackend] allocator returned None — out of local CPU memory")
+                return None
+            memory_obj.tensor.copy_(tensor)
+            return memory_obj
+        else:
+            # No local CPU backend available — wrap the tensor directly.
+            from lmcache.v1.memory_management import TensorMemoryObj, MemoryObjMetadata
+            raw_data = tensor.cpu().contiguous().view(torch.uint8)
+            meta = MemoryObjMetadata(
+                shape=tensor.shape,
+                dtype=tensor.dtype,
+                address=raw_data.data_ptr(),
+                phy_size=raw_data.nbytes,
+                ref_count=1,
+                fmt=MemoryFormat.KV_2LTD,
+            )
+            return TensorMemoryObj(raw_data, meta, parent_allocator=None)
 
     def remove(self, key: CacheEngineKey, force: bool = True) -> bool:
         block_id = self._encode_key(key)
