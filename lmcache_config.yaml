@@ -12,7 +12,7 @@ extra_config:
   storage_plugin.grpc.class_name: GRPCBackend
 
   # Machine B address — update to the actual IP when running on separate hosts.
-  grpc_server: "172.31.7.166:50051"
+  grpc_server: "172.31.0.80:50051"
 
   grpc_quality_score: 1.0
 
