@@ -82,6 +82,11 @@ tokenizer = llm.get_tokenizer()
 sampling_params = SamplingParams(
     temperature=args.temperature,
     max_tokens=args.max_tokens,
+    # Because we build the Mistral prompt as a raw string, the model emits
+    # the LITERAL "</s>" character sequence instead of the real EOS token —
+    # which vLLM can't use as a stop signal. Stop explicitly on the string
+    # pattern, plus "[INST]" in case the model tries to open a new turn.
+    stop=["</s>", "[INST]"],
 )
 
 
@@ -107,27 +112,35 @@ def _b_stats():
 
 
 # ── Prompt construction ────────────────────────────────────────────────────────
-# Mistral's chat template doesn't accept role="system", so we fold the system
-# prompt into the first user message on every render.
+# We build Mistral's [INST]/[/INST] format manually. Reasons:
+#   1. role="system" isn't accepted by Mistral's chat template — we fold the
+#      system prompt into the first user turn.
+#   2. Mistral-Common's validator rejects the implicit empty assistant turn
+#      that `add_generation_prompt=True` produces, raising
+#      InvalidAssistantMessageException. Building the string ourselves
+#      sidesteps the validator entirely.
+# The exact byte-for-byte format matches what vLLM's Mistral tokenizer emits
+# for a valid conversation, so prefix caching (and LMCache) still hits across
+# turns because the prefix is deterministic.
 def _build_prompt(history: list[dict]) -> str:
-    # Stateless mode: only last user message
+    # --stateless: only the last user turn reaches the model. Useful for a
+    # KV-cache eviction demo where you want an empty prefix every call.
+    # Ordinary chat should NOT set this — the model needs history to remember
+    # anything across turns.
     if args.stateless and history:
-        turns = [{"role": "user", "content": history[-1]["content"]}]
-    else:
-        turns = [dict(t) for t in history]
+        last = history[-1]
+        return f"<s>[INST] {SYSTEM_PROMPT}\n\n{last['content']} [/INST]"
 
-        # fold system prompt into first user message (Mistral requirement)
-        if turns and turns[0]["role"] == "user":
-            turns[0] = {
-                "role": "user",
-                "content": f"{SYSTEM_PROMPT}\n\n{turns[0]['content']}",
-            }
-
-    return tokenizer.apply_chat_template(
-        turns,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+    parts = ["<s>"]
+    for i, msg in enumerate(history):
+        if msg["role"] == "user":
+            content = msg["content"]
+            if i == 0:
+                content = f"{SYSTEM_PROMPT}\n\n{content}"
+            parts.append(f"[INST] {content} [/INST]")
+        elif msg["role"] == "assistant":
+            parts.append(f" {msg['content']}</s>")
+    return "".join(parts)
 
 
 # ── Chat loop ──────────────────────────────────────────────────────────────────
