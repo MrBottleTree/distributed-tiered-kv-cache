@@ -4,6 +4,12 @@ GRPCBackend — LMCache storage plugin that talks to Machine B (EvicPress).
 Implements the StoragePluginInterface so LMCache's StorageManager can route
 KV cache blocks to the remote EvicPress tiered storage node over gRPC.
 
+Tiering is INCLUSIVE: Machine B always holds a Tier 3 canonical copy of every
+block. When Machine B signals tier=1 in StoreResponse, Machine A mirrors the
+block into its LocalCPUBackend as a pure cache copy. If Machine A evicts that
+copy under its own LRU the block is simply dropped — Machine B still has it.
+There is NO T1 return protocol.
+
 Serialization:
   KV tensors are serialized with torch.save() into raw bytes. Machine B stores
   them opaquely — it has no knowledge of tensor shapes or dtypes. On retrieval,
@@ -21,7 +27,6 @@ Prefetch:
 """
 
 import io
-import threading
 from typing import Callable, List, Optional, Sequence, Union
 from concurrent.futures import Future
 
@@ -67,10 +72,6 @@ class GRPCBackend(StoragePluginInterface):
         self.stub    = evicpress_pb2_grpc.EvicPressServiceStub(self.channel)
         print(f"[GRPCBackend] connected to Machine B at {self.server_addr}")
 
-        # Registry of T1-promoted blocks: block_id → CacheEngineKey
-        # Needed to fetch & return data to Machine B when EvicPress evicts from T1.
-        self._t1_key_registry: dict[str, "CacheEngineKey"] = {}
-
     # ------------------------------------------------------------------ #
     #  Key encoding                                                        #
     # ------------------------------------------------------------------ #
@@ -106,10 +107,15 @@ class GRPCBackend(StoragePluginInterface):
 
     def contains(self, key: CacheEngineKey, pin: bool = False) -> bool:
         """
-        O(1) existence check via Machine B's Lookup RPC.
-        If the block is in Tier 3 (disk), fire a non-blocking Prefetch hint
-        so Machine B can promote it to RAM before the upcoming get_blocking().
+        Local-first existence check: if Machine A's LocalCPUBackend (Tier 1)
+        already holds the block, skip the network round-trip. Otherwise fall
+        back to Machine B's Lookup RPC. If the block is in Tier 3 (disk),
+        fire a non-blocking Prefetch hint so Machine B can promote it to RAM
+        before the upcoming get_blocking().
         """
+        if self.local_cpu_backend is not None and self.local_cpu_backend.contains(key, pin=pin):
+            return True
+
         block_id = self._encode_key(key)
         try:
             resp = self.stub.Lookup(
@@ -125,12 +131,6 @@ class GRPCBackend(StoragePluginInterface):
             self.stub.Prefetch.future(
                 evicpress_pb2.PrefetchRequest(block_ids=[block_id])
             )
-
-        # Process any T1 eviction commands from Machine B (fire-and-forget)
-        for bid in resp.evict_from_t1:
-            threading.Thread(
-                target=self._return_t1_block, args=(bid,), daemon=True
-            ).start()
 
         return resp.hit
 
@@ -179,17 +179,10 @@ class GRPCBackend(StoragePluginInterface):
                 print(f"[GRPCBackend] Store failed: {resp.message}")
             elif resp.tier == 1 and self.local_cpu_backend is not None:
                 # Machine B decided this block belongs in Machine A RAM (Tier 1).
-                # Write the original MemoryObj into LocalCPUBackend directly.
+                # Mirror it into LocalCPUBackend. Machine B still holds the
+                # canonical T3 copy, so A's LRU can drop this at will.
                 print(f"[GRPCBackend] Tier1 promote {block_id[:32]}…")
-                self._t1_key_registry[block_id] = key
                 self.local_cpu_backend.submit_put_task(key, obj)
-            else:
-                # Not in T1 — remove stale registry entry if present
-                self._t1_key_registry.pop(block_id, None)
-
-            # Process any T1 eviction commands from Machine B
-            for bid in resp.evict_from_t1:
-                self._return_t1_block(bid)
 
         except grpc.RpcError as e:
             print(f"[GRPCBackend] Store RPC error: {e.details()}")
@@ -241,33 +234,6 @@ class GRPCBackend(StoragePluginInterface):
                 fmt=MemoryFormat.KV_2LTD,
             )
             return TensorMemoryObj(raw_data, meta, parent_allocator=None)
-
-    def _return_t1_block(self, block_id: str) -> None:
-        """
-        Evict a block from Machine A's T1 (local_cpu_backend) and return the
-        data to Machine B so it can store it in T2/T3.
-        Called when Machine B sends evict_from_t1 commands in responses.
-        """
-        key = self._t1_key_registry.pop(block_id, None)
-        if key is None or self.local_cpu_backend is None:
-            return  # stale command or no T1 available
-        try:
-            obj = self.local_cpu_backend.get_blocking(key)
-            if obj is None:
-                return  # already evicted by Machine A's own LRU
-            data = self._tensor_to_bytes(obj.get_tensor(0))
-            print(f"[GRPCBackend] T1 return {block_id[:32]}… size={len(data)//1024}KB")
-            self.stub.Store(
-                evicpress_pb2.StoreRequest(
-                    block_id=block_id,
-                    data=data,
-                    quality_score=self._quality_score,
-                    is_t1_return=True,
-                )
-            )
-            self.local_cpu_backend.remove(key)
-        except Exception as e:
-            print(f"[GRPCBackend] T1 return failed for {block_id[:32]}…: {e}")
 
     def remove(self, key: CacheEngineKey, force: bool = True) -> bool:
         block_id = self._encode_key(key)

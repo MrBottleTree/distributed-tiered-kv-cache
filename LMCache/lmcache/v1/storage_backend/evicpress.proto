@@ -4,6 +4,10 @@ package evicpress;
 
 // EvicPressService is Machine B's gRPC interface.
 // Machine A calls these to store, retrieve, prefetch, and inspect KV cache blocks.
+//
+// Tiering is INCLUSIVE: Machine B's disk (T3) always holds a canonical copy of
+// every block. T1 (Machine A RAM) and T2 (Machine B RAM) are pure cache copies.
+// Evicting from T1/T2 is a drop — data is never lost until T3 evicts.
 service EvicPressService {
   // Lookup: check if a block exists and which tier it's in. O(1).
   rpc Lookup (LookupRequest) returns (LookupResponse);
@@ -29,9 +33,8 @@ message LookupRequest {
   string block_id = 1;
 }
 message LookupResponse {
-  bool  hit                   = 1;
-  int32 tier                  = 2;  // 0 = miss, 1 = Machine A RAM (ledger), 2 = Machine B RAM, 3 = Disk
-  repeated string evict_from_t1 = 3;  // Block IDs Machine A must evict from T1 and return here.
+  bool  hit  = 1;
+  int32 tier = 2;  // 0 = miss, 1 = Machine A RAM (ledger), 2 = Machine B RAM, 3 = Disk
 }
 
 // --- Store ---
@@ -39,13 +42,11 @@ message StoreRequest {
   string block_id      = 1;
   bytes  data          = 2;  // Serialized KV tensor (opaque bytes)
   float  quality_score = 3;  // 0.0-1.0. How sensitive this block is to compression.
-  bool   is_t1_return  = 4;  // True when Machine A is returning an evicted T1 block; skip T1 re-promotion.
 }
 message StoreResponse {
-  bool   success              = 1;
-  int32  tier                 = 2;  // 1 = promote to Machine A RAM; 2/3 = stored on Machine B only
-  string message              = 3;  // Optional debug message
-  repeated string evict_from_t1 = 4;  // Block IDs Machine A must evict from T1 and return here.
+  bool   success = 1;
+  int32  tier    = 2;  // Primary tier cached. 1 = promote to Machine A RAM; 2 = Machine B RAM; 3 = Disk only.
+  string message = 3;  // Optional debug message
 }
 
 // --- Retrieve ---
