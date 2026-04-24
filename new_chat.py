@@ -40,6 +40,8 @@ p.add_argument("--temperature",    type=float, default=0.7)
 p.add_argument("--max-model-len",  type=int,   default=16384)
 p.add_argument("--no-cache-info",  action="store_true")
 p.add_argument("--machine-b",      default=os.environ.get("MACHINE_B", "localhost"))
+p.add_argument("--stateless", action="store_true",
+                                    help="Do not resend history (for KV cache demo)")
 args = p.parse_args()
 
 SYSTEM_PROMPT = (
@@ -108,12 +110,19 @@ def _b_stats():
 # Mistral's chat template doesn't accept role="system", so we fold the system
 # prompt into the first user message on every render.
 def _build_prompt(history: list[dict]) -> str:
-    turns = [dict(t) for t in history]
-    if turns and turns[0]["role"] == "user":
-        turns[0] = {
-            "role": "user",
-            "content": f"{SYSTEM_PROMPT}\n\n{turns[0]['content']}",
-        }
+    # Stateless mode: only last user message
+    if args.stateless and history:
+        turns = [{"role": "user", "content": history[-1]["content"]}]
+    else:
+        turns = [dict(t) for t in history]
+
+        # fold system prompt into first user message (Mistral requirement)
+        if turns and turns[0]["role"] == "user":
+            turns[0] = {
+                "role": "user",
+                "content": f"{SYSTEM_PROMPT}\n\n{turns[0]['content']}",
+            }
+
     return tokenizer.apply_chat_template(
         turns,
         tokenize=False,
