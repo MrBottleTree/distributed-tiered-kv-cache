@@ -1,31 +1,45 @@
 """
-Interactive chat with Llama-3.1-8B via vLLM + LMCache + EvicPress (Machine B).
+Interactive chat with Mistral-7B-Instruct-v0.3 via vLLM + LMCache + EvicPress.
 
-The system prompt is shared across every turn — LMCache caches it after the
-first message and serves it from Machine B on all subsequent turns, so you
-can see real cache-hit / promotion behaviour while chatting.
+The system prompt is prepended to the first user turn (Mistral's chat template
+does not accept role="system"). LMCache caches the shared prefix so subsequent
+turns hit Machine B's tiered cache instead of recomputing from scratch.
 
 Usage:
-    python chat.py                  # interactive mode
-    python chat.py --max-tokens 200 # longer replies
-    python chat.py --no-cache-info  # hide cache status lines
+    MACHINE_B=172.31.12.251 python new_chat.py
+    python new_chat.py --max-tokens 200
+    python new_chat.py --no-cache-info
 """
 
-import os, sys, time, argparse, textwrap, socket
-os.environ.setdefault("LMCACHE_CONFIG_FILE", "lmcache_config.yaml")
+import argparse
+import os
+import socket
+import sys
+import textwrap
+import time
+
+# Resolve LMCACHE_CONFIG_FILE relative to this script so it works from any cwd.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+os.environ.setdefault("LMCACHE_CONFIG_FILE", os.path.join(_HERE, "lmcache_config.yaml"))
 os.environ.setdefault("PYTHONHASHSEED", "0")
 os.environ.setdefault("LMCACHE_LOG_LEVEL", "WARNING")
 os.environ.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
 
+# Make the Machine B proto stubs importable once (used by _b_stats).
+sys.path.insert(0, os.path.join(_HERE, "LMCache", "lmcache", "v1", "storage_backend"))
+
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
 
+
 # ── Args ───────────────────────────────────────────────────────────────────────
 p = argparse.ArgumentParser(description="EvicPress-backed interactive chat")
-p.add_argument("--max-tokens",   type=int,   default=300)
-p.add_argument("--temperature",  type=float, default=0.7)
-p.add_argument("--no-cache-info",action="store_true")
-p.add_argument("--machine-b",    default=os.environ.get("MACHINE_B","172.31.7.166"))
+p.add_argument("--model",          default="mistralai/Mistral-7B-Instruct-v0.3")
+p.add_argument("--max-tokens",     type=int,   default=300)
+p.add_argument("--temperature",    type=float, default=0.7)
+p.add_argument("--max-model-len",  type=int,   default=16384)
+p.add_argument("--no-cache-info",  action="store_true")
+p.add_argument("--machine-b",      default=os.environ.get("MACHINE_B", "localhost"))
 args = p.parse_args()
 
 SYSTEM_PROMPT = (
@@ -35,26 +49,31 @@ SYSTEM_PROMPT = (
     "You acknowledge uncertainty when you are not sure of an answer."
 )
 
+
 # ── Connectivity check ─────────────────────────────────────────────────────────
-def _check_b():
-    s = socket.socket(); s.settimeout(2)
-    ok = s.connect_ex((args.machine_b, 50051)) == 0
-    s.close()
-    return ok
+def _check_b() -> bool:
+    s = socket.socket()
+    s.settimeout(2)
+    try:
+        return s.connect_ex((args.machine_b, 50051)) == 0
+    finally:
+        s.close()
+
 
 if not _check_b():
-    print(f"[warn] Machine B at {args.machine_b}:50051 is unreachable — cache will be skipped", flush=True)
+    print(f"[warn] Machine B at {args.machine_b}:50051 is unreachable — "
+          f"cache will still try to run but no hits will be served", flush=True)
+
 
 # ── Load model ─────────────────────────────────────────────────────────────────
-print("[chat] Loading model…", flush=True)
+print(f"[chat] Loading model {args.model}…", flush=True)
 llm = LLM(
-    model="mistralai/Mistral-7B-Instruct-v0.3",
+    model=args.model,
     enable_prefix_caching=True,
-    max_model_len=16384,
+    max_model_len=args.max_model_len,
     kv_transfer_config=KVTransferConfig(
         kv_connector="LMCacheConnectorV1",
-        kv_role="kv_both"
-        
+        kv_role="kv_both",
     ),
 )
 tokenizer = llm.get_tokenizer()
@@ -63,44 +82,53 @@ sampling_params = SamplingParams(
     max_tokens=args.max_tokens,
 )
 
+
 # ── Cache stats helper ─────────────────────────────────────────────────────────
+try:
+    import grpc
+    import evicpress_pb2 as _pb2
+    import evicpress_pb2_grpc as _pb2_grpc
+    _stats_channel = grpc.insecure_channel(f"{args.machine_b}:50051")
+    _stats_stub = _pb2_grpc.EvicPressServiceStub(_stats_channel)
+except Exception as e:
+    print(f"[chat] stats channel init failed: {e}", flush=True)
+    _stats_stub = None
+
+
 def _b_stats():
+    if _stats_stub is None:
+        return None
     try:
-        import grpc, sys as _sys
-        _sys.path.insert(0, os.path.join(os.path.dirname(__file__),
-                         'LMCache/lmcache/v1/storage_backend'))
-        import evicpress_pb2 as pb2, evicpress_pb2_grpc as grpc2
-        ch = grpc.insecure_channel(f"{args.machine_b}:50051")
-        s  = grpc2.EvicPressServiceStub(ch).GetStats(pb2.StatsRequest(), timeout=1)
-        ch.close()
-        return s
+        return _stats_stub.GetStats(_pb2.StatsRequest(), timeout=1.0)
     except Exception:
         return None
 
-# ── Chat loop ──────────────────────────────────────────────────────────────────
-history = []   # list of {"role": ..., "content": ...}
 
-
-def _build_prompt():
-    """Build a Mistral chat prompt."""
-    if getattr(args, "stateless", False) and history:
-        # ONLY send last user message (no history)
-        turns = [{"role": "user", "content": history[-1]["content"]}]
-    else:
-        # normal behavior
-        turns = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-
+# ── Prompt construction ────────────────────────────────────────────────────────
+# Mistral's chat template doesn't accept role="system", so we fold the system
+# prompt into the first user message on every render.
+def _build_prompt(history: list[dict]) -> str:
+    turns = [dict(t) for t in history]
+    if turns and turns[0]["role"] == "user":
+        turns[0] = {
+            "role": "user",
+            "content": f"{SYSTEM_PROMPT}\n\n{turns[0]['content']}",
+        }
     return tokenizer.apply_chat_template(
         turns,
         tokenize=False,
-        add_generation_prompt=True
-    )   
+        add_generation_prompt=True,
+    )
 
-print("\n" + "="*60)
-print("  EvicPress Chat  |  Model: Llama-3.1-8B-Instruct")
+
+# ── Chat loop ──────────────────────────────────────────────────────────────────
+history: list[dict] = []
+
+print("\n" + "=" * 60)
+print(f"  EvicPress Chat  |  Model: {args.model}")
 print(f"  Machine B: {args.machine_b}:50051")
 print("  Type 'quit' or Ctrl-C to exit, 'clear' to reset history")
-print("="*60 + "\n")
+print("=" * 60 + "\n")
 
 turn = 0
 while True:
@@ -122,7 +150,7 @@ while True:
         continue
 
     history.append({"role": "user", "content": user_input})
-    prompt = _build_prompt()
+    prompt = _build_prompt(history)
 
     t0 = time.time()
     outputs = llm.generate([prompt], sampling_params, use_tqdm=False)
@@ -131,7 +159,6 @@ while True:
     reply = outputs[0].outputs[0].text.strip()
     history.append({"role": "assistant", "content": reply})
 
-    # Wrap reply for readability
     wrapped = textwrap.fill(reply, width=72, subsequent_indent="       ")
     print(f"\nBot:   {wrapped}\n")
 
@@ -139,11 +166,13 @@ while True:
     if not args.no_cache_info:
         s = _b_stats()
         if s:
-            tier_str = (f"T1={s.tier1_blocks}blk  "
-                        f"T2={s.tier2_blocks}blk  "
-                        f"T3={s.tier3_blocks}blk  "
-                        f"hit_rate={s.hit_rate:.2f}  "
-                        f"promotions={s.tier1_promotions}")
+            tier_str = (
+                f"T1={s.tier1_blocks}blk  "
+                f"T2={s.tier2_blocks}blk  "
+                f"T3={s.tier3_blocks}blk  "
+                f"hit_rate={s.hit_rate:.2f}  "
+                f"promotions={s.tier1_promotions}"
+            )
         else:
             tier_str = "Machine B unreachable"
         print(f"       [{elapsed:.2f}s | {tier_str}]\n")
