@@ -5,7 +5,7 @@ import warnings
 
 import evicpress_pb2 as evicpress__pb2
 
-GRPC_GENERATED_VERSION = '1.80.0'
+GRPC_GENERATED_VERSION = '1.78.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -28,6 +28,10 @@ if _version_not_supported:
 class EvicPressServiceStub(object):
     """EvicPressService is Machine B's gRPC interface.
     Machine A calls these to store, retrieve, prefetch, and inspect KV cache blocks.
+
+    Tiering is INCLUSIVE: Machine B's disk (T3) always holds a canonical copy of
+    every block. T1 (Machine A RAM) and T2 (Machine B RAM) are pure cache copies.
+    Evicting from T1/T2 is a drop — data is never lost until T3 evicts.
     """
 
     def __init__(self, channel):
@@ -71,6 +75,10 @@ class EvicPressServiceStub(object):
 class EvicPressServiceServicer(object):
     """EvicPressService is Machine B's gRPC interface.
     Machine A calls these to store, retrieve, prefetch, and inspect KV cache blocks.
+
+    Tiering is INCLUSIVE: Machine B's disk (T3) always holds a canonical copy of
+    every block. T1 (Machine A RAM) and T2 (Machine B RAM) are pure cache copies.
+    Evicting from T1/T2 is a drop — data is never lost until T3 evicts.
     """
 
     def Lookup(self, request, context):
@@ -159,6 +167,10 @@ def add_EvicPressServiceServicer_to_server(servicer, server):
 class EvicPressService(object):
     """EvicPressService is Machine B's gRPC interface.
     Machine A calls these to store, retrieve, prefetch, and inspect KV cache blocks.
+
+    Tiering is INCLUSIVE: Machine B's disk (T3) always holds a canonical copy of
+    every block. T1 (Machine A RAM) and T2 (Machine B RAM) are pure cache copies.
+    Evicting from T1/T2 is a drop — data is never lost until T3 evicts.
     """
 
     @staticmethod

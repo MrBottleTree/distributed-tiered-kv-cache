@@ -3,7 +3,7 @@ PYTHON     ?= python
 VENV       := $(HOME)/venv/bin/activate
 LMCACHE    := $(HOME)/distributed-tiered-kv-cache/LMCache
 CFG        := lmcache_config.yaml
-MACHINE_B  ?= 172.31.0.80
+MACHINE_B  ?= 172.31.12.251
 LOG        := $(HOME)/vllm.log
 
 .PHONY: help setup proto run run-stress test-grpc logs status stop ping-b chat
