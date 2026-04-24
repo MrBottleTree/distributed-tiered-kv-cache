@@ -247,28 +247,28 @@ class StorageManager:
         #
         # Why each field is needed:
         #   storage_plugins  – tells the launcher which plugin names to load.
-        #   extra_config     – carries the module/class path + server address
-        #                      that storage_plugin_launcher uses for dynamic import.
+        #   extra_config     – carries the module/class path that
+        #                      storage_plugin_launcher uses for dynamic import.
         #   enable_pd=False  – the launcher is guarded by
         #                      `if not config.enable_pd or config.local_cpu`
         #                      so PD mode would skip plugin loading entirely.
         #
-        # We *merge* into extra_config rather than replacing it so any keys
-        # set by the caller (e.g. audit flags) are preserved.
+        # We only *fill in* keys the caller didn't already provide — the
+        # grpc_server address in particular is read from the user's
+        # lmcache_config.yaml and must NEVER be clobbered here.
         self.config.storage_plugins = ["grpc"]
         self.config.enable_pd = False
 
-        _grpc_extra = {
+        _grpc_extra_defaults = {
             "storage_plugin.grpc.module_path": (
                 "lmcache.v1.storage_backend.grpc_backend"
             ),
             "storage_plugin.grpc.class_name": "GRPCBackend",
-            "grpc_server": "127.0.0.1:8080",  # ← change to your server address
         }
         if self.config.extra_config is None:
-            self.config.extra_config = _grpc_extra
-        else:
-            self.config.extra_config.update(_grpc_extra)
+            self.config.extra_config = {}
+        for k, v in _grpc_extra_defaults.items():
+            self.config.extra_config.setdefault(k, v)
         # ── end gRPC injection ─────────────────────────────────────────────────
 
         # Use the unified create path so that init and
