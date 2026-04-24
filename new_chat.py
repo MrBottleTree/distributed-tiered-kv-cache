@@ -33,13 +33,25 @@ from vllm.config import KVTransferConfig
 
 
 # ── Args ───────────────────────────────────────────────────────────────────────
+# Try to discover Machine B from the LMCache config if not set in env.
+_default_b = os.environ.get("MACHINE_B")
+if not _default_b:
+    try:
+        import yaml
+        with open(os.environ["LMCACHE_CONFIG_FILE"], "r") as f:
+            _y = yaml.safe_load(f)
+            _s = _y.get("extra_config", {}).get("grpc_server", "localhost:50051")
+            _default_b = _s.split(":")[0]
+    except Exception:
+        _default_b = "172.31.12.251"
+
 p = argparse.ArgumentParser(description="EvicPress-backed interactive chat")
 p.add_argument("--model",          default="mistralai/Mistral-7B-Instruct-v0.3")
 p.add_argument("--max-tokens",     type=int,   default=300)
 p.add_argument("--temperature",    type=float, default=0.7)
 p.add_argument("--max-model-len",  type=int,   default=16384)
 p.add_argument("--no-cache-info",  action="store_true")
-p.add_argument("--machine-b",      default=os.environ.get("MACHINE_B", "localhost"))
+p.add_argument("--machine-b",      default=_default_b)
 p.add_argument("--stateless", action="store_true",
                                     help="Do not resend history (for KV cache demo)")
 args = p.parse_args()
