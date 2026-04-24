@@ -12,7 +12,9 @@ extra_config:
   storage_plugin.grpc.class_name: GRPCBackend
 
   # Machine B address — update to the actual IP when running on separate hosts.
-  grpc_server: "172.31.0.80:50051"
+  # gRPC lives on port 50051 on Machine B; port 8080 there is the dashboard,
+  # not the gRPC server — do not point this at 8080.
+  grpc_server: "172.31.12.251:50051"
 
   grpc_quality_score: 1.0
 
