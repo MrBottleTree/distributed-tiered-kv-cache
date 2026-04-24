@@ -80,14 +80,10 @@ def _b_stats():
 # ── Chat loop ──────────────────────────────────────────────────────────────────
 history = []   # list of {"role": ..., "content": ...}
 
-def _build_prompt():
-    """Build a Llama-3 chat prompt with the full conversation history."""
-    turns = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-    return tokenizer.apply_chat_template(
-        turns, tokenize=False, add_generation_prompt=True
+
 def _build_prompt():
     """Build a Mistral chat prompt."""
-    if args.stateless and history:
+    if getattr(args, "stateless", False) and history:
         # ONLY send last user message (no history)
         turns = [{"role": "user", "content": history[-1]["content"]}]
     else:
@@ -95,8 +91,10 @@ def _build_prompt():
         turns = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
     return tokenizer.apply_chat_template(
-        turns, tokenize=False, add_generation_prompt=True
-    )   )
+        turns,
+        tokenize=False,
+        add_generation_prompt=True
+    )   
 
 print("\n" + "="*60)
 print("  EvicPress Chat  |  Model: Llama-3.1-8B-Instruct")

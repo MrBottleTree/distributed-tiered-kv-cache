@@ -6,7 +6,7 @@ import grpc
 import evicpress_pb2 as pb2
 import evicpress_pb2_grpc as grpc2
 
-addr = os.environ.get('MACHINE_B', '172.31.0.80') + ':50051'
+addr = os.environ.get('MACHINE_B', '172.31.12.251') + ':50051'
 print(f'[smoke] connecting to {addr}')
 ch   = grpc.insecure_channel(addr)
 stub = grpc2.EvicPressServiceStub(ch)

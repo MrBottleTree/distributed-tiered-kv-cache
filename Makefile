@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 PYTHON     ?= python
-VENV       := $(HOME)/venv/bin/activate
+VENV       := /home/ubuntu/venv/bin/activate
 LMCACHE    := $(HOME)/distributed-tiered-kv-cache/LMCache
 CFG        := lmcache_config.yaml
 MACHINE_B  ?= 172.31.12.251
@@ -58,6 +58,9 @@ logs:         ## Tail the vLLM log (Ctrl-C to exit)
 
 chat:         ## Start interactive chat (LMCache + EvicPress backend)
 	source $(VENV) && LMCACHE_CONFIG_FILE=$(CFG) PYTHONHASHSEED=0 MACHINE_B=$(MACHINE_B) $(PYTHON) chat.py
+
+new_chat:         ## Updated with new model and stateless or stateful queries
+	source $(VENV) && LMCACHE_CONFIG_FILE=$(CFG) PYTHONHASHSEED=0 MACHINE_B=$(MACHINE_B) $(PYTHON) new_chat.py
 
 stop:         ## Kill any running vLLM python processes
 	@pkill -f "python.*run_vllm" 2>/dev/null && echo "[stop] killed" || echo "[stop] nothing running"
