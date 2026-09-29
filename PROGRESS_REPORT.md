@@ -10,6 +10,7 @@ Status as of 2026-09-29. Machine A and Machine B remain separate repositories.
 - In the Machine B companion repository, fixed oversized Tier 3 store rejection reporting and updated the service response, setup, configuration-aware restart, and dependency pins.
 - Added an opt-in Machine A FlashAttention probe as a project-local vLLM plugin. It gathers logical keys from paged KV, computes post-softmax mass per query head and LMCache-sized token window during decode (optional chunked prefill), accumulates on GPU, and writes a small result after the requested steps. It leaves the normal attention output and eviction policy unchanged; this pilot supports one request/layer and unquantized GPU KV.
 - Added `run_tests.py` as the new-machine entry point: optional isolated dependency setup, unit-first preflight, pinned model/scorer preparation, separate plain/remote benchmark profiles, strict remote-fetch evidence checks, combined metrics, per-stage logs/timeouts, and profile-level resume. It reuses the existing benchmark suite; it does not provision nodes. Captured subprocess errors now reach stage logs.
+- Switched all active project-owned model loaders to pinned Mistral-7B-Instruct-v0.3 AWQ INT4 weights through `model_settings.py`. GPU KV and activations stay FP16; remote validation defaults to `remote_fp16`, with explicit cache-compression profiles retained. Kept the original tokenizer revision and all frozen benchmark bytes; the earlier FP16-weight snapshot is `7bf1a6f`.
 
 ## Verified
 
@@ -20,6 +21,7 @@ Status as of 2026-09-29. Machine A and Machine B remain separate repositories.
 - The probe package built as a wheel; syntax and command-line checks passed. The six benchmark-harness tests still pass.
 - New-machine runner: eight local tests passed (six harness, one attention, one orchestration check); unit-mode execution/resume and five-profile dry-run checked. Linux dependency installation and live GPU/two-node orchestration remain unverified.
 - Pre-commit verification reran all eight local tests successfully and checked documented CLI/Makefile entry points. README now specifies the working branch and distinguishes legacy setup from the new-machine runner.
+- INT4 update: nine local tests passed, including shared model/server settings, FP16 KV, tokenizer provenance, and default remote-FP16 selection. Verified the pinned checkpoint's AWQ 4-bit metadata, matching architecture/token IDs, frozen input hashes, syntax, CLI help, and wheel packaging. GPU loading, 16 GB fit, and quantized-model quality remain unverified; weight quantization is lossy and does not promise identical answers.
 
 These checks are local; the attention plugin has **not** been run inside a GPU vLLM worker, so live capture and overhead are still unverified. Remote diagnostics require Machine B. **No two-machine/GPU benchmark campaign has been run, so there are no measured baseline scores yet.** The RULER/LongBench sets are configured, but LongBench uses a small pilot subset and is not leaderboard-comparable.
 

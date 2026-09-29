@@ -30,6 +30,9 @@ import zipfile
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from model_settings import model_server_args, tokenizer_identity, verify_input_tokenizer
+
 HERE = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = HERE / "manifest.json"
 DEPS = HERE / ".sources"
@@ -254,8 +257,7 @@ def prepare(manifest: dict, force: bool, selected: list[str] | None = None,
         for name in ("ruler", "longbench"):
             ensure_source(name, manifest["sources"][name])
         provenance = read_json(DATA / "provenance.json")
-        if provenance["model_revision"] != manifest["model_revision"]:
-            raise RuntimeError("Frozen inputs use a different model/tokenizer revision")
+        verify_input_tokenizer(manifest, provenance)
         if provenance["longbench_dataset_revision"] != manifest["datasets"]["longbench"]["revision"]:
             raise RuntimeError("Frozen inputs use a different LongBench dataset revision")
         for name, spec in manifest["sources"].items():
@@ -273,8 +275,8 @@ def prepare(manifest: dict, force: bool, selected: list[str] | None = None,
         print(f"Verifying official {name} source")
         ensure_source(name, spec)
     install_nltk_tokenizers(require_source("nltk_data", manifest))
-    tokenizer, tokenizer_path = tokenizer_for(
-        manifest["model"], manifest["model_revision"])
+    tokenizer_model, tokenizer_revision = tokenizer_identity(manifest)
+    tokenizer, tokenizer_path = tokenizer_for(tokenizer_model, tokenizer_revision)
     for name, test in manifest["tests"].items():
         if selected is not None and name not in selected:
             continue
@@ -285,8 +287,9 @@ def prepare(manifest: dict, force: bool, selected: list[str] | None = None,
     corpus = (DEPS / "ruler" / "scripts" / "data" / "synthetic" / "json"
               / "PaulGrahamEssays.json")
     write_json(DATA / "provenance.json", {
-        "model": manifest["model"],
-        "model_revision": manifest["model_revision"],
+        # Retain the existing provenance format: these identify prompt tokenization.
+        "model": tokenizer_model,
+        "model_revision": tokenizer_revision,
         "sources": {name: spec["commit"] for name, spec in manifest["sources"].items()},
         "longbench_dataset_revision": manifest["datasets"]["longbench"]["revision"],
         "ruler_essay_corpus_sha256": file_sha256(corpus) if corpus.exists() else None,
@@ -377,13 +380,9 @@ def model_server(manifest: dict, profile: dict, run_dir: Path, b_host: str | Non
     url = f"http://{server['host']}:{server['port']}/v1"
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
-        "--model", manifest["model"], "--host", server["host"],
-        "--revision", manifest["model_revision"],
-        "--tokenizer-revision", manifest["model_revision"],
+        *model_server_args(manifest),
+        "--host", server["host"],
         "--port", str(server["port"]),
-        "--max-model-len", str(manifest["max_model_len"]),
-        "--gpu-memory-utilization", str(server["gpu_memory_utilization"]),
-        "--dtype", server.get("dtype", "float16"),
         *server.get("extra_args", []),
     ]
     env = os.environ.copy()
@@ -606,6 +605,11 @@ def run_legacy(name: str, test: dict, run_dir: Path, b_host: str | None,
         cfg_path = run_dir / "lmcache_config.yaml"
         make_a_config(b_host, cfg_path)
         env["LMCACHE_CONFIG_FILE"] = str(cfg_path)
+    # Pass the entire resolved manifest, not just a model name: the diagnostic
+    # needs the pinned revision, original tokenizer, and separate KV dtype too.
+    diagnostic_manifest = run_dir / "diagnostic_manifest.json"
+    write_json(diagnostic_manifest, manifest)
+    env["BENCH_MANIFEST"] = str(diagnostic_manifest.resolve())
     env["BENCH_MODEL"] = manifest["model"]
     script = ROOT / test["script"]
     cmd = [sys.executable, str(script)]
@@ -687,8 +691,7 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
             if not provenance_path.exists():
                 raise RuntimeError("Data provenance missing; rerun prepare before GPU time")
             provenance = read_json(provenance_path)
-            if provenance["model_revision"] != manifest["model_revision"]:
-                raise RuntimeError("Frozen prompts use a different model/tokenizer revision")
+            verify_input_tokenizer(manifest, provenance)
             if provenance["sources"][test["kind"]] != manifest["sources"][test["kind"]]["commit"]:
                 raise RuntimeError(f"Frozen {name} was generated from a different official source")
             if test["kind"] == "longbench" and (

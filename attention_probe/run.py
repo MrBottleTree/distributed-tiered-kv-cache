@@ -8,6 +8,8 @@ from pathlib import Path
 import time
 from uuid import uuid4
 
+from model_settings import model_options
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Probe live KV-window attention mass")
@@ -56,8 +58,7 @@ def main() -> None:
 
     manifest = json.loads((root / "benchmarks" / "manifest.json").read_text())
     options = {
-        "model": manifest["model"],
-        "revision": manifest["model_revision"],
+        **model_options(manifest),
         "max_model_len": args.max_model_len,
         "max_num_seqs": 1,
         "attention_backend": "FLASH_ATTN",

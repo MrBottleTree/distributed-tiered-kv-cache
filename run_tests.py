@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".validation-venv"
 sys.path.insert(0, str(ROOT / "benchmarks"))
 import suite
+from model_settings import tokenizer_identity, validate_weight_config
 
 UNIT_FILES = ("test_benchmark_suite.py", "test_attention_probe.py", "test_new_machine_runner.py")
 # Config files use these same names, with underscores instead of CLI hyphens.
@@ -52,7 +53,7 @@ def parse_args(argv=None):
     parser.add_argument("--setup", action="store_true", help="Install into .validation-venv (Linux)")
     parser.add_argument("--manifest", type=Path, default=suite.DEFAULT_MANIFEST)
     parser.add_argument("--test", action="append", help="Official workload name; repeat to select several")
-    parser.add_argument("--remote-profile", action="append", help="Default remote_alpha_1; use 'all' for four")
+    parser.add_argument("--remote-profile", action="append", help="Default remote_fp16; use 'all' for four")
     parser.add_argument("--repeats", type=int, default=2, help="Cold/warm prompt repeats, at least 2")
     for key in ("b_host", "b_dashboard_url", "b_data_dir", "b_ssh", "b_config_path",
                 "b_restart_command", "b_repo_path", "b_commit"):
@@ -104,7 +105,7 @@ def selected_profiles(args, manifest: dict) -> list[str]:
     """Keep the plain baseline independent of Machine B and its configuration."""
     names = ["plain"] if args.mode in ("single", "both") else []
     if args.mode in ("remote", "both"):
-        remote = args.remote_profile or ["remote_alpha_1"]
+        remote = args.remote_profile or ["remote_fp16"]
         if remote == ["all"]:
             remote = [n for n, p in manifest["profiles"].items() if p["remote"]]
         for name in remote:
@@ -130,7 +131,7 @@ def selected_profiles(args, manifest: dict) -> list[str]:
 
 def fingerprint(settings: dict) -> str:
     """Do not mix old successful runs with changed code, settings, or frozen data."""
-    paths = [ROOT / "run_tests.py", ROOT / "requirements.txt", ROOT / "pyproject.toml",
+    paths = [ROOT / "run_tests.py", ROOT / "model_settings.py", ROOT / "requirements.txt", ROOT / "pyproject.toml",
              ROOT / "lmcache_config.yaml", Path(settings["manifest"]),
              Path(settings["b_base_config"])]
     for directory in (ROOT / "tests", ROOT / "attention_probe", ROOT / "benchmarks"):
@@ -323,8 +324,11 @@ def prepare_model(args, manifest):
                                                  "*.model.v3", "*.jinja", "*.txt"])
     if not list(Path(snapshot).glob("model*.safetensors")):
         raise RuntimeError("Pinned model has no model*.safetensors weights; review download patterns")
-    AutoTokenizer.from_pretrained(snapshot, trust_remote_code=False)
-    print(f"Pinned model/tokenizer ready: {snapshot}")
+    validate_weight_config(manifest, suite.read_json(Path(snapshot) / "config.json"))
+    # Weight quantization must not change token IDs or the benchmark chat template.
+    tokenizer, tokenizer_revision = tokenizer_identity(manifest)
+    AutoTokenizer.from_pretrained(tokenizer, revision=tokenizer_revision, trust_remote_code=False)
+    print(f"Pinned model ready: {snapshot}; tokenizer={tokenizer}@{tokenizer_revision}")
 
 
 def check_remote(args, manifest):
@@ -338,7 +342,7 @@ def check_remote(args, manifest):
     state = suite.b_state(args.b_dashboard_url or f"http://{args.b_host}:8080")
     print("Machine B configuration:", state["config"])
     if not args.b_ssh:
-        profile = manifest["profiles"][(args.remote_profile or ["remote_alpha_1"])[0]]
+        profile = manifest["profiles"][(args.remote_profile or ["remote_fp16"])[0]]
         suite.verify_b(state, profile, args.b_data_dir)
         print("Manual B run: ensure service was restarted with a fresh empty data directory")
 

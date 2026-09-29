@@ -1,7 +1,12 @@
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
 import os
+from pathlib import Path
+import sys
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from model_settings import model_options
 
 # LMCache reads its config from this env var.
 os.environ.setdefault("LMCACHE_CONFIG_FILE", "lmcache_config.yaml")
@@ -10,9 +15,8 @@ os.environ.setdefault("LMCACHE_CONFIG_FILE", "lmcache_config.yaml")
 # kv_transfer_config activates the connector — without it, LMCACHE_CONFIG_FILE
 # is never read and LMCache is silently skipped.
 llm = LLM(
-    model=os.environ.get("BENCH_MODEL", "mistralai/Mistral-7B-Instruct-v0.3"),
+    **model_options(model=os.environ.get("BENCH_MODEL")),
     enable_prefix_caching=True,
-    max_model_len=16384,
     kv_transfer_config=KVTransferConfig(
         kv_connector="LMCacheConnectorV1",
         kv_role="kv_both",

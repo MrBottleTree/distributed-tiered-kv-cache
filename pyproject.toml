@@ -12,3 +12,4 @@ dstn_attention_probe = "attention_probe.plugin:register"
 
 [tool.setuptools]
 packages = ["attention_probe"]
+py-modules = ["model_settings"]

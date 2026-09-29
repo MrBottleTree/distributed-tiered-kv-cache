@@ -2,6 +2,8 @@
 
 This is the Machine A side of a distributed KV-cache prototype. vLLM uses LMCache to send and retrieve KV blocks over gRPC; the separate `evicpress-core` repository runs Machine B's tiered storage service. Remote reuse and tiered storage are implemented. Per-head placement and attention-mass-guided decisions are future work.
 
+The default model is pinned [Mistral-7B-Instruct-v0.3 AWQ](https://huggingface.co/solidrust/Mistral-7B-Instruct-v0.3-AWQ/tree/95b1295ddd1a8673117cdc7bd2a4da2a457bb3f7): **4-bit model weights, FP16 activations and GPU KV cache**. The original tokenizer/revision and frozen prompts are unchanged. `run_tests.py` defaults remote runs to `remote_fp16`; selecting `remote_alpha_*` or `all` explicitly enables Machine B cache-compression experiments. Manual chats use B's existing policy, so disable B quantization separately for an FP16-only remote run. Quantized weights can change answers; use the same checkpoint across profiles and measure quality rather than assuming identical output. GPU fit/quality remain unverified. The previous FP16-weight snapshot is commit `7bf1a6f` (on a clean node checkout: `git switch --detach 7bf1a6f`).
+
 ```text
 vLLM / Machine A -> LMCache gRPC backend -> EvicPress / Machine B -> RAM and disk tiers
 ```
@@ -13,6 +15,7 @@ vLLM / Machine A -> LMCache gRPC backend -> EvicPress / Machine B -> RAM and dis
 | `Makefile` | Setup, launch, and Machine B smoke/stress commands. |
 | `run_tests.py` | New-machine setup/validation: unit tests, preflight diagnostics, and separate single/remote GPU benchmark runs with logs and resume. |
 | `requirements.txt` | Machine A Python dependencies. |
+| `model_settings.py` | Shared pinned model/tokenizer loading options; keeps weight and KV precision separate. |
 | `lmcache_config.yaml` | LMCache configuration for the remote backend. |
 | `chat.py`, `new_chat.py` | Interactive vLLM + LMCache demonstrations using different models. |
 | `tests/` | Smoke checks, integration diagnostics, needle retrieval, and benchmark-runner unit tests. Details below. |
@@ -41,7 +44,7 @@ The `LMCache/` tree is an upstream/vendor checkout with its own code, tests, and
 | `tests/stress_test_grpc_backend.py` | Multi-chunk/prefix fetches, repeated lookup, batched contains, and timing. |
 | `tests/run_vllm_hopefully.py` | Repeated-prompt vLLM/LMCache integration smoke check. |
 | `tests/needle_haystack.py` | Retrieval quality/latency at different needle positions; expected HIT/MISS labels are not proof of remote fetch. |
-| `tests/test_benchmark_suite.py` | Six GPU-free tests of profiles, config rendering, metrics, counters, and result output. |
+| `tests/test_benchmark_suite.py` | Seven GPU-free tests of model/KV settings, tokenizer provenance, profiles, config rendering, metrics, counters, and result output. |
 | `tests/test_attention_probe.py` | One synthetic CPU check of paged-key order, GQA, causal masking, and window mass. |
 | `tests/test_new_machine_runner.py` | One GPU-free check of stage order, five-profile isolation, and passed/failed resume behavior. |
 
@@ -88,15 +91,16 @@ Run `run_tests.py` **on Machine A**, from the repository root. It wraps the exis
 python3 run_tests.py --mode both --config hardware.json --dry-run  # inspect stages without executing
 # Choose one GPU workflow (both already includes the single-machine baseline):
 python3 run_tests.py --setup --mode single                         # first GPU node: unit tests, then all seven workloads
-python3 run_tests.py --setup --mode both --config hardware.json     # first two-node campaign: all five profiles
-python3 run_tests.py --mode unit                                  # eight local tests; no GPU/network/B required
+python3 run_tests.py --setup --mode both --config hardware.json     # first two-node campaign: plain + remote FP16
+python3 run_tests.py --mode both --config hardware.json --remote-profile all  # explicit five-profile cache experiment
+python3 run_tests.py --mode unit                                  # nine local tests; no GPU/network/B required
 ```
 
 `--setup` creates `.validation-venv`, installs pinned serving/scoring dependencies, then installs **this checkout's** LMCache and the optional probe package. Later invocations automatically use that environment; shell activation is unnecessary. Setup is explicit and does not install drivers or alter system packages. Without it, an existing environment must already contain the dependencies (CPU tests need PyYAML and PyTorch).
 
 For manual Python commands below, activate `source .validation-venv/bin/activate` if using this setup; for Makefile commands also pass `VENV="$PWD/.validation-venv/bin/activate" LMCACHE="$PWD/LMCache"` to override their old defaults.
 
-For the two-node/five-profile run, create an ignored `hardware.json` on A, replacing the example host and absolute B paths:
+For the two-node run, create an ignored `hardware.json` on A, replacing the example host and absolute B paths. This example keeps remote KV in FP16; override `--remote-profile all` only for cache-compression comparisons:
 
 ```json
 {
@@ -105,13 +109,13 @@ For the two-node/five-profile run, create an ignored `hardware.json` on A, repla
   "b_config_path": "/opt/evicpress-core/machine_b/config/benchmark.yaml",
   "b_repo_path": "/opt/evicpress-core",
   "b_restart_command": "cd /opt/evicpress-core/machine_b && make restart CONFIG=config/benchmark.yaml",
-  "remote_profile": ["all"]
+  "remote_profile": ["remote_fp16"]
 }
 ```
 
-B must already be running and reachable on private ports `50051` and `8080`; configure noninteractive SSH and its verified host key beforehand. These explicit SSH settings authorize configuration upload and B restart for each remote profile, with a fresh disk directory. Without SSH, select one profile and pass `--b-host HOST --b-data-dir /data/kv_cache/FRESH_RUN`; manually restart B with that matching profile/directory first. `--mode single` never contacts B; `--mode remote` omits the plain baseline. Remote mode defaults to `remote_alpha_1`; `--remote-profile all` selects all four remote profiles.
+B must already be running and reachable on private ports `50051` and `8080`; configure noninteractive SSH and its verified host key beforehand. These explicit SSH settings authorize configuration upload and B restart for each remote profile, with a fresh disk directory. Without SSH, select one profile and pass `--b-host HOST --b-data-dir /data/kv_cache/FRESH_RUN`; manually restart B with that matching profile/directory first. `--mode single` never contacts B; `--mode remote` omits the plain baseline. Remote mode defaults to `remote_fp16`; `--remote-profile all` explicitly selects all four remote profiles, including KV-compression experiments.
 
-Stages are: setup if requested → eight unit tests → dependency/import, CUDA execution and free-port checks → pinned scorer sources/frozen-input hashes and scorer calls → B connectivity/real gRPC round trip when requested → pinned model download → benchmarks. Failures stop immediately; no automatic paid retries. Attention probing is disabled for these baseline runs. The default workloads are four RULER NIAH tasks, two LongBench pilot subsets, and LMCache long-document QA, using the existing manifest/model and two cold/warm prompt repeats. Old manual model/needle diagnostics are not all rerun automatically; they are available below and are not official benchmarks.
+Stages are: setup if requested → nine unit tests → dependency/import, CUDA execution and free-port checks → pinned scorer sources/frozen-input hashes and scorer calls → B connectivity/real gRPC round trip when requested → pinned model download → benchmarks. Failures stop immediately; no automatic paid retries. Attention probing is disabled for these baseline runs. The default workloads are four RULER NIAH tasks, two LongBench pilot subsets, and LMCache long-document QA, using the existing manifest/model and two cold/warm prompt repeats. Old manual model/needle diagnostics are not all rerun automatically; they are available below and are not official benchmarks.
 
 ```sh
 python3 run_tests.py --mode single --test ruler_niah_single_4k     # focused first GPU pass
@@ -197,8 +201,8 @@ MACHINE_B="$MACHINE_B" python tests/needle_haystack.py
 
 ## Chat and backend verification
 
-- `make new_chat MACHINE_B=10.0.0.5` starts the interactive Mistral-7B chat through vLLM and LMCache. `make chat MACHINE_B=10.0.0.5` uses Llama-3.1-8B and may require Hugging Face access. Both need a GPU, a running B service, and the correct `grpc_server` in `lmcache_config.yaml`.
-- For a vLLM-only one-shot check, with LMCache not enabled in the shell, run: `python -c 'from vllm import LLM, SamplingParams; m=LLM("mistralai/Mistral-7B-Instruct-v0.3", max_model_len=2048); print(m.generate(["Say hello."], SamplingParams(max_tokens=16))[0].outputs[0].text)'`.
+- `make new_chat MACHINE_B=10.0.0.5` and `make chat MACHINE_B=10.0.0.5` use the same pinned 4-bit Mistral through vLLM and LMCache. Both need a GPU, a running B service, and the correct `grpc_server` in `lmcache_config.yaml`.
+- For a vLLM-only one-shot check, with LMCache not enabled in the shell, run: `python -c 'from vllm import LLM, SamplingParams; from model_settings import model_options; o=model_options(); o["max_model_len"]=2048; m=LLM(**o); print(m.generate(["Say hello."], SamplingParams(max_tokens=16))[0].outputs[0].text)'`.
 - `make ping-b MACHINE_B=10.0.0.5` only proves TCP port `50051` is reachable. `make test-grpc MACHINE_B=10.0.0.5` verifies actual gRPC storage/retrieval. `python benchmarks/suite.py check --profile remote_alpha_1 --b-host 10.0.0.5` runs benchmark dependency/B preflight.
 - Other A targets: `make help`, `make setup`, `make proto`, `make status`, `make logs`, `make stop`. `make logs` tails `$HOME/vllm.log` only if you have redirected a manual run there; benchmark logs are in their result directories. `make proto` regenerates stubs inside `LMCache/`; use only when intentionally changing its protocol. On B: `make help`, `make setup`, `make run`, `make start`, `make restart CONFIG=config/config.yaml`, `make stop`, `make status`, `make stats`, `make ping`, and `make logs`.
 

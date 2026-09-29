@@ -12,6 +12,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "benchmarks"))
 import suite
+from model_settings import model_options, model_server_args, validate_weight_config, verify_input_tokenizer
 
 
 class _FakeOpenAIServer(BaseHTTPRequestHandler):
@@ -50,6 +51,33 @@ class _FakeOpenAIServer(BaseHTTPRequestHandler):
 
 
 class SuiteTests(unittest.TestCase):
+    def test_int4_weights_keep_fp16_kv_and_original_tokenizer(self):
+        manifest = suite.read_json(suite.DEFAULT_MANIFEST)
+        options = model_options(manifest)
+        self.assertEqual(manifest["weight_quantization"], {"method": "awq", "bits": 4})
+        self.assertEqual(options["dtype"], "float16")
+        self.assertEqual(options["kv_cache_dtype"], "float16")
+        self.assertEqual(options["tokenizer"], "mistralai/Mistral-7B-Instruct-v0.3")
+        self.assertNotEqual(options["revision"], options["tokenizer_revision"])
+        self.assertNotIn("quantization", options)  # Checkpoint detection permits AWQ/Marlin.
+        verify_input_tokenizer(manifest, suite.read_json(suite.DATA / "provenance.json"))
+        with self.assertRaises(RuntimeError):
+            verify_input_tokenizer(manifest, {"model": "wrong", "model_revision": "wrong"})
+        validate_weight_config(manifest, {"quantization_config": {"quant_method": "awq", "bits": 4}})
+        with self.assertRaises(RuntimeError):
+            validate_weight_config(manifest, {"quantization_config": {"quant_method": "awq", "bits": 8}})
+        self.assertNotIn("revision", model_options(manifest, model="another/model"))
+
+        # Exercise the real server-command builder without launching a GPU worker.
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(suite.subprocess, "Popen") as process, \
+             mock.patch.object(suite, "http_json", return_value={"data": []}):
+            process.return_value.poll.return_value = None
+            with suite.model_server(manifest, {"remote": False}, Path(temporary), None, None):
+                command = process.call_args.args[0]
+                expected = model_server_args(manifest)
+                self.assertEqual(command[3:3 + len(expected)], expected)
+
     def test_manifest_profiles_and_sources(self):
         manifest = suite.read_json(suite.DEFAULT_MANIFEST)
         self.assertEqual(len(manifest["profiles"]), 5)
@@ -126,6 +154,7 @@ class SuiteTests(unittest.TestCase):
             item = data_dir / "official.jsonl"
             item.write_text(json.dumps({"input": "Prompt", "outputs": ["bluebird"]}) + "\n")
             suite.write_json(data_dir / "provenance.json", {
+                "model": "model",
                 "inputs": {"official": suite.file_sha256(item)},
                 "model_revision": "x" * 40,
                 "sources": {"ruler": "x" * 40}})

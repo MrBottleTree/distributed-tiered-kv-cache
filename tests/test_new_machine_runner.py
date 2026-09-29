@@ -12,6 +12,10 @@ import run_tests
 class NewMachineRunnerTest(unittest.TestCase):
     def test_profile_isolation_and_resume(self):
         commands = []
+        default_remote = run_tests.parse_args([
+            "--mode", "remote", "--b-host", "storage.example", "--b-data-dir", "/fresh"])
+        self.assertEqual(run_tests.selected_profiles(default_remote,
+                         run_tests.suite.read_json(run_tests.suite.DEFAULT_MANIFEST)), ["remote_fp16"])
         args = run_tests.parse_args([
             "--mode", "both", "--test", "ruler_niah_single_4k", "--dry-run",
             "--b-host", "storage.example", "--b-ssh", "user@storage.example",

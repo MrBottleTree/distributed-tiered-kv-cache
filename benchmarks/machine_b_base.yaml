@@ -23,7 +23,7 @@ dashboard:
   host: 0.0.0.0
   port: 8080
 quantization:
-  enabled: true
+  enabled: false  # KV compression requires an explicitly selected quantized profile.
   size_multiplier:
     fp16: 1.0
     int8: 0.5

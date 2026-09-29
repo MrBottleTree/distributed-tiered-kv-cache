@@ -23,7 +23,8 @@
 - Run the local harness tests with `python -m unittest discover -s tests -p test_benchmark_suite.py -v` after changing the benchmark runner or its manifest.
 - `make test-grpc MACHINE_B=HOST_OR_IP` runs the direct Machine B smoke check; `make run-stress` runs the LMCache/gRPC stress diagnostic. These require a reachable Machine B.
 - `make run` launches the vLLM integration check and may require a GPU, model download, and Machine B. Do not launch it unless the task calls for runtime testing.
-- The scripts in `tests/` are mostly manual diagnostics, not a comprehensive assertion-based correctness suite. Distinguish their output from the six GPU-free benchmark-harness unit tests.
+- The scripts in `tests/` are mostly manual diagnostics, not a comprehensive assertion-based correctness suite. Distinguish their output from the seven GPU-free benchmark-harness unit tests.
+- All model-loading entry points use `model_settings.py` and the pinned manifest. Weight quantization is separate from GPU KV dtype and Machine B compression; keep GPU KV FP16 by default and preserve frozen tokenizer provenance when changing weights.
 - Do not run paid GPU, AWS, or full remote benchmark matrices unless explicitly requested. The LongBench inputs are a 25-example-per-task pilot subset and are not paper-leaderboard results.
 - When moving or renaming a test, update every relevant reference in `Makefile`, `benchmarks/manifest.json`, and the root `README.md`.
 

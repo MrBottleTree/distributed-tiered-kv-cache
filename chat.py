@@ -1,5 +1,5 @@
 """
-Interactive chat with Llama-3.1-8B via vLLM + LMCache + EvicPress (Machine B).
+Interactive chat with the manifest's 4-bit Mistral via vLLM + LMCache + EvicPress.
 
 The system prompt is shared across every turn — LMCache caches it after the
 first message and serves it from Machine B on all subsequent turns, so you
@@ -19,6 +19,7 @@ os.environ.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
 
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
+from model_settings import model_options
 
 # ── Args ───────────────────────────────────────────────────────────────────────
 p = argparse.ArgumentParser(description="EvicPress-backed interactive chat")
@@ -48,9 +49,8 @@ if not _check_b():
 # ── Load model ─────────────────────────────────────────────────────────────────
 print("[chat] Loading model…", flush=True)
 llm = LLM(
-    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+    **model_options(),
     enable_prefix_caching=True,
-    max_model_len=16384,
     kv_transfer_config=KVTransferConfig(
         kv_connector="LMCacheConnectorV1",
         kv_role="kv_both",
@@ -80,14 +80,16 @@ def _b_stats():
 history = []   # list of {"role": ..., "content": ...}
 
 def _build_prompt():
-    """Build a Llama-3 chat prompt with the full conversation history."""
-    turns = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+    """Fold the system message into the first user turn for Mistral's template."""
+    turns = [dict(turn) for turn in history]
+    if turns:
+        turns[0]["content"] = SYSTEM_PROMPT + "\n\n" + turns[0]["content"]
     return tokenizer.apply_chat_template(
         turns, tokenize=False, add_generation_prompt=True
     )
 
 print("\n" + "="*60)
-print("  EvicPress Chat  |  Model: Llama-3.1-8B-Instruct")
+print(f"  EvicPress Chat  |  Model: {model_options()['model']}")
 print(f"  Machine B: {args.machine_b}:50051")
 print("  Type 'quit' or Ctrl-C to exit, 'clear' to reset history")
 print("="*60 + "\n")

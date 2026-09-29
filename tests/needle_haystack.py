@@ -22,6 +22,11 @@ Usage:
 """
 
 import os, sys, time, argparse, textwrap, socket, random, json, statistics, string
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from model_settings import load_manifest, model_options
+
 os.environ.setdefault("LMCACHE_CONFIG_FILE", "lmcache_config.yaml")
 os.environ.setdefault("PYTHONHASHSEED", "0")
 os.environ.setdefault("LMCACHE_LOG_LEVEL", "WARNING")
@@ -35,7 +40,7 @@ p = argparse.ArgumentParser(description="Needle-in-a-Haystack LMCache verificati
 p.add_argument("--max-tokens",  type=int,   default=80)
 p.add_argument("--temperature", type=float, default=0.0,   help="0 = greedy, best for accuracy")
 p.add_argument("--machine-b",   default=os.environ.get("MACHINE_B", "172.31.7.166"))
-p.add_argument("--model", default=os.environ.get("BENCH_MODEL", "mistralai/Mistral-7B-Instruct-v0.3"))
+p.add_argument("--model", default=os.environ.get("BENCH_MODEL", load_manifest()["model"]))
 p.add_argument("--haystack-kb", type=int,   default=16,    help="Target haystack size in KB")
 p.add_argument("--positions",   type=int,   default=4,     help="Needle depth points to test")
 p.add_argument("--repeats",     type=int,   default=3,     help="Queries per position (1 miss + N-1 hits)")
@@ -141,9 +146,8 @@ def _b_stats():
 # ── Load model ─────────────────────────────────────────────────────────────────
 print("[niah] Loading model…", flush=True)
 llm = LLM(
-    model=args.model,
+    **model_options(model=args.model),
     enable_prefix_caching=True,
-    max_model_len=16384,
     kv_transfer_config=KVTransferConfig(
         kv_connector="LMCacheConnectorV1",
         kv_role="kv_both"

@@ -1,5 +1,5 @@
 """
-Interactive chat with Mistral-7B-Instruct-v0.3 via vLLM + LMCache + EvicPress.
+Interactive chat with 4-bit Mistral-7B-Instruct-v0.3 via vLLM + LMCache + EvicPress.
 
 The system prompt is prepended to the first user turn (Mistral's chat template
 does not accept role="system"). LMCache caches the shared prefix so subsequent
@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(_HERE, "LMCache", "lmcache", "v1", "storage_back
 
 from vllm import LLM, SamplingParams
 from vllm.config import KVTransferConfig
+from model_settings import load_manifest, model_options
 
 
 # ── Args ───────────────────────────────────────────────────────────────────────
@@ -46,10 +47,10 @@ if not _default_b:
         _default_b = "172.31.12.251"
 
 p = argparse.ArgumentParser(description="EvicPress-backed interactive chat")
-p.add_argument("--model",          default="mistralai/Mistral-7B-Instruct-v0.3")
+p.add_argument("--model",          default=os.environ.get("BENCH_MODEL", load_manifest()["model"]))
 p.add_argument("--max-tokens",     type=int,   default=300)
 p.add_argument("--temperature",    type=float, default=0.7)
-p.add_argument("--max-model-len",  type=int,   default=16384)
+p.add_argument("--max-model-len",  type=int,   default=load_manifest()["max_model_len"])
 p.add_argument("--no-cache-info",  action="store_true")
 p.add_argument("--machine-b",      default=_default_b)
 p.add_argument("--stateless", action="store_true",
@@ -81,10 +82,11 @@ if not _check_b():
 
 # ── Load model ─────────────────────────────────────────────────────────────────
 print(f"[chat] Loading model {args.model}…", flush=True)
+options = model_options(model=args.model)
+options["max_model_len"] = args.max_model_len
 llm = LLM(
-    model=args.model,
+    **options,
     enable_prefix_caching=True,
-    max_model_len=args.max_model_len,
     kv_transfer_config=KVTransferConfig(
         kv_connector="LMCacheConnectorV1",
         kv_role="kv_both",

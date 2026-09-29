@@ -1,13 +1,18 @@
 {
   "schema_version": 1,
-  "model": "mistralai/Mistral-7B-Instruct-v0.3",
-  "model_revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+  "model": "solidrust/Mistral-7B-Instruct-v0.3-AWQ",
+  "model_revision": "95b1295ddd1a8673117cdc7bd2a4da2a457bb3f7",
+  "weight_quantization": {"method": "awq", "bits": 4},
+  "tokenizer": "mistralai/Mistral-7B-Instruct-v0.3",
+  "tokenizer_revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
   "max_model_len": 8192,
   "server": {
     "host": "127.0.0.1",
     "port": 8000,
     "gpu_memory_utilization": 0.8,
     "dtype": "float16",
+    "kv_cache_dtype": "float16",
+    "max_num_seqs": 1,
     "extra_args": ["--no-enable-prefix-caching"]
   },
   "sources": {
