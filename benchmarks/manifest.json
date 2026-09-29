@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "model": "mistralai/Mistral-7B-Instruct-v0.3",
+  "model_revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+  "max_model_len": 8192,
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "gpu_memory_utilization": 0.8,
+    "dtype": "float16",
+    "extra_args": ["--no-enable-prefix-caching"]
+  },
+  "sources": {
+    "ruler": {
+      "url": "https://github.com/NVIDIA/RULER.git",
+      "commit": "c3f5e3b4f87f97e048793bb510a3a6b19a46bf3a"
+    },
+    "longbench": {
+      "url": "https://github.com/THUDM/LongBench.git",
+      "commit": "2e00731f8d0bff23dc4325161044d0ed8af94c1e"
+    },
+    "nltk_data": {
+      "url": "https://github.com/nltk/nltk_data.git",
+      "commit": "550b6625bcef1f2abff2ff770a5a0d272c9c6b2a"
+    }
+  },
+  "datasets": {
+    "longbench": {
+      "repo": "THUDM/LongBench",
+      "revision": "5e628be450b7e67fb7ae6e201bd6d8f7056f7672"
+    }
+  },
+  "profiles": {
+    "plain": {"remote": false, "description": "vLLM without LMCache connector"},
+    "remote_fp16": {"remote": true, "alpha": 1.0, "quantization": false},
+    "remote_alpha_0": {"remote": true, "alpha": 0.0, "quantization": true},
+    "remote_alpha_1": {"remote": true, "alpha": 1.0, "quantization": true},
+    "remote_alpha_5": {"remote": true, "alpha": 5.0, "quantization": true}
+  },
+  "tests": {
+    "smoke_test_b": {"kind": "legacy", "script": "tests/smoke_test_b.py", "remote_only": true},
+    "test_grpc_backend": {"kind": "legacy", "script": "tests/test_grpc_backend.py", "remote_only": true},
+    "stress_test_grpc_backend": {"kind": "legacy", "script": "tests/stress_test_grpc_backend.py", "remote_only": true},
+    "run_vllm_hopefully": {"kind": "legacy", "script": "tests/run_vllm_hopefully.py", "remote_only": true},
+    "needle_haystack": {"kind": "legacy", "script": "tests/needle_haystack.py", "remote_only": true},
+    "ruler_niah_single_4k": {"kind": "ruler", "task": "niah_single_1", "length": 4096, "samples": 20, "max_new_tokens": 128},
+    "ruler_niah_multikey_4k": {"kind": "ruler", "task": "niah_multikey_1", "length": 4096, "samples": 20, "max_new_tokens": 128},
+    "ruler_niah_single_8k": {"kind": "ruler", "task": "niah_single_1", "length": 8192, "samples": 20, "max_new_tokens": 128},
+    "ruler_niah_multikey_8k": {"kind": "ruler", "task": "niah_multikey_1", "length": 8192, "samples": 20, "max_new_tokens": 128},
+    "longbench_qasper": {"kind": "longbench", "dataset": "qasper", "samples": 25},
+    "longbench_2wikimqa": {"kind": "longbench", "dataset": "2wikimqa", "samples": 25},
+    "long_doc_qa": {"kind": "lmcache", "documents": 20, "document_length": 4000, "repeat_count": 3, "output_len": 32, "max_inflight_requests": 1, "hit_miss_ratio": "3:1"}
+  }
+}

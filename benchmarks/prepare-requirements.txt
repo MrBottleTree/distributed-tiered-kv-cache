@@ -1,0 +1,16 @@
+# Use in a SEPARATE, CPU-only preparation venv. datasets==3.6.0 needs an
+# older fsspec than the root vLLM environment, so do not mix the two.
+datasets==3.6.0
+transformers==4.57.6
+huggingface_hub==0.36.2
+protobuf==6.33.6
+sentencepiece==0.2.1
+PyYAML==6.0.3
+numpy==2.2.6
+nltk>=3.8,<4
+wonderwords>=2.2
+html2text>=2020.1
+beautifulsoup4>=4.12
+Jinja2==3.1.6
+tenacity>=8.0
+tqdm==4.67.3

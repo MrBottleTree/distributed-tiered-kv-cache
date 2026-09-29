@@ -1,0 +1,7 @@
+# Install into Machine A's working vLLM environment after root requirements.
+# These scoring/workload extras do not replace vLLM's pinned core packages.
+jieba==0.42.1
+fuzzywuzzy==0.18.0
+rouge==1.0.1
+pandas==2.3.3
+matplotlib==3.10.9

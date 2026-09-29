@@ -2,4 +2,13 @@ venv/
 __pycache__/
 *.pyc
 node_modules/
-
+.codex_tmp/
+benchmarks/.sources/
+benchmarks/.nltk_data/
+benchmarks/data/_ruler_generated/
+benchmarks/results/
+.bench-prepare-venv/
+.validation-venv/
+hardware.json
+build/
+*.egg-info/

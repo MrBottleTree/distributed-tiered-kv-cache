@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dstn-attention-probe"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+dstn_attention_probe = "attention_probe.plugin:register"
+
+[tool.setuptools]
+packages = ["attention_probe"]

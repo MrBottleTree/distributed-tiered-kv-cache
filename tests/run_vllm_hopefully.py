@@ -10,7 +10,7 @@ os.environ.setdefault("LMCACHE_CONFIG_FILE", "lmcache_config.yaml")
 # kv_transfer_config activates the connector — without it, LMCACHE_CONFIG_FILE
 # is never read and LMCache is silently skipped.
 llm = LLM(
-    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+    model=os.environ.get("BENCH_MODEL", "mistralai/Mistral-7B-Instruct-v0.3"),
     enable_prefix_caching=True,
     max_model_len=16384,
     kv_transfer_config=KVTransferConfig(

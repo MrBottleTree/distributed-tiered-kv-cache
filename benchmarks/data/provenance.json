@@ -1,0 +1,19 @@
+{
+  "model": "mistralai/Mistral-7B-Instruct-v0.3",
+  "model_revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+  "sources": {
+    "ruler": "c3f5e3b4f87f97e048793bb510a3a6b19a46bf3a",
+    "longbench": "2e00731f8d0bff23dc4325161044d0ed8af94c1e",
+    "nltk_data": "550b6625bcef1f2abff2ff770a5a0d272c9c6b2a"
+  },
+  "longbench_dataset_revision": "5e628be450b7e67fb7ae6e201bd6d8f7056f7672",
+  "ruler_essay_corpus_sha256": "341e0b5aaa38ab13d8f7c8b57d3b067ba120e90e690fde63dd016ac638993c77",
+  "inputs": {
+    "ruler_niah_single_4k": "f56ed302a4f3f8cc7f384843575bdf5868f4d14fd9eb19c2536cca91eec309dd",
+    "ruler_niah_multikey_4k": "a836c74952168df45735e67af7a8f792eb7af86c5d7246deb8f5c681e24f223a",
+    "ruler_niah_single_8k": "d6139dbc974596e388207849a18f72c6fabaf6c22e240169dac4014258b71cd1",
+    "ruler_niah_multikey_8k": "3e0926fbe35222ca87c4b9f89655471a6e6f0f053f2a3088da37c55f51a87018",
+    "longbench_qasper": "dc648ae59e6da1fe61d308ea4da6aa05b6ba442c7d302a5544f4694b3447ab12",
+    "longbench_2wikimqa": "7112acb37afdc652025f84961193a8f990f91f66b3196980671867ad6e0e7c19"
+  }
+}

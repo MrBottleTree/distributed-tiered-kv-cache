@@ -1,0 +1,38 @@
+# Benchmark-only Machine B template. Keep identical capacities for every profile.
+# The runner replaces alpha, quantization.enabled, and tier3.data_dir.
+evicpress:
+  alpha: 1.0
+tier1:
+  capacity_bytes: 2147483648
+  bandwidth_bytes_per_sec: 53687091200
+tier2:
+  capacity_bytes: 4294967296
+  bandwidth_bytes_per_sec: 53687091200
+tier3:
+  capacity_bytes: 42949672960
+  bandwidth_bytes_per_sec: 3758096384
+  data_dir: /data/kv_cache/benchmark_PLACEHOLDER
+prefetch:
+  enabled: true
+  max_queue_size: 64
+server:
+  host: 0.0.0.0
+  port: 50051
+  max_message_bytes: 536870912
+dashboard:
+  host: 0.0.0.0
+  port: 8080
+quantization:
+  enabled: true
+  size_multiplier:
+    fp16: 1.0
+    int8: 0.5
+    int4: 0.25
+placement:
+  bands:
+    - {name: hot, min_utility: 0.8, tiers: [1, 2, 3], quant: fp16}
+    - {name: warm, min_utility: 0.3, tiers: [2, 3], quant: fp16}
+    - {name: cool, min_utility: 0.1, tiers: [2, 3], quant: int8}
+    - {name: cold, min_utility: 0.0, tiers: [3], quant: int4}
+logging:
+  max_recent_ops: 300

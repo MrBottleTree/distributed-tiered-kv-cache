@@ -7,6 +7,7 @@ from lmcache.v1.memory_management import MemoryFormat
 from lmcache.utils import CacheEngineKey
 from lmcache.v1.event_manager import EventManager
 
+import os
 import torch
 import time
 
@@ -17,7 +18,7 @@ config.storage_plugins = ["grpc"]
 config.extra_config = {
     "storage_plugin.grpc.module_path": "lmcache.v1.storage_backend.grpc_backend",
     "storage_plugin.grpc.class_name": "GRPCBackend",
-    "grpc_server": "127.0.0.1:8080",
+    "grpc_server": os.environ.get("MACHINE_B", "127.0.0.1") + ":50051",
 } #replace with actual server ip
 
 config.enable_pd = False

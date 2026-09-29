@@ -1,5 +1,6 @@
 # import torch
-from LMCache.lmcache.v1.config import LMCacheEngineConfig
+import os
+from lmcache.v1.config import LMCacheEngineConfig
 from lmcache.v1.metadata import LMCacheMetadata
 from lmcache.v1.storage_backend.storage_manager import StorageManager
 from lmcache.v1.memory_management import MemoryObj, MemoryFormat
@@ -16,11 +17,11 @@ config.storage_plugins = ["grpc"]
 config.extra_config = {
     "storage_plugin.grpc.module_path": "lmcache.v1.storage_backend.grpc_backend",
     "storage_plugin.grpc.class_name": "GRPCBackend",
-    "grpc_server": "127.0.0.1:8080",
+    "grpc_server": os.environ.get("MACHINE_B", "127.0.0.1") + ":50051",
 }
 
 config.enable_pd = False
-config.local_cpu = False
+config.local_cpu = True
 config.local_disk = None
 config.remote_url = None
 

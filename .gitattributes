@@ -1,0 +1,3 @@
+# Frozen inputs are hashed byte-for-byte; do not translate their line endings.
+benchmarks/data/*.jsonl -text
+benchmarks/data/provenance.json -text

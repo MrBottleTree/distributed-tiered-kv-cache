@@ -30,15 +30,15 @@ proto:        ## (Re)generate gRPC Python stubs from evicpress.proto
 # ── Run ────────────────────────────────────────────────────────────────────────
 
 run:          ## Run the vLLM + LMCache end-to-end test (foreground)
-	source $(VENV) && LMCACHE_CONFIG_FILE=$(CFG) PYTHONHASHSEED=0 $(PYTHON) run_vllm_hopefully.py
+	source $(VENV) && LMCACHE_CONFIG_FILE=$(CFG) PYTHONHASHSEED=0 $(PYTHON) tests/run_vllm_hopefully.py
 
 run-stress:   ## Run the gRPC stress test against Machine B
-	source $(VENV) && LMCACHE_CONFIG_FILE=$(CFG) $(PYTHON) stress_test_grpc_backend.py
+	source $(VENV) && LMCACHE_CONFIG_FILE=$(CFG) $(PYTHON) tests/stress_test_grpc_backend.py
 
 # ── Test / Debug ───────────────────────────────────────────────────────────────
 
 test-grpc:    ## Direct gRPC smoke test against Machine B (no vLLM)
-	source $(VENV) && MACHINE_B=$(MACHINE_B) $(PYTHON) smoke_test_b.py
+	source $(VENV) && MACHINE_B=$(MACHINE_B) $(PYTHON) tests/smoke_test_b.py
 
 ping-b:       ## TCP connectivity check to Machine B gRPC port
 	@source $(VENV) && $(PYTHON) -c "import socket,os; \

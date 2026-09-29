@@ -1,4 +1,3 @@
-(venv) ubuntu@ip-172-31-11-107:~/distributed-tiered-kv-cache$ cat needle_haystack.py 
 """
 Needle-in-a-Haystack cache verification script.
 
@@ -15,11 +14,11 @@ Statistics reported per position and overall:
   latency (s), accuracy (%), speedup (miss→hit), cache tier counts, hit_rate
 
 Usage:
-    python needle_haystack.py                       # defaults
-    python needle_haystack.py --haystack-kb 32      # ~32 KB context
-    python needle_haystack.py --positions 5         # 5 depth points
-    python needle_haystack.py --repeats 4           # 1 miss + 3 hits per position
-    python needle_haystack.py --output-json out.json
+    python tests/needle_haystack.py                       # defaults
+    python tests/needle_haystack.py --haystack-kb 32      # ~32 KB context
+    python tests/needle_haystack.py --positions 5         # 5 depth points
+    python tests/needle_haystack.py --repeats 4           # 1 miss + 3 hits per position
+    python tests/needle_haystack.py --output-json out.json
 """
 
 import os, sys, time, argparse, textwrap, socket, random, json, statistics, string
@@ -36,6 +35,7 @@ p = argparse.ArgumentParser(description="Needle-in-a-Haystack LMCache verificati
 p.add_argument("--max-tokens",  type=int,   default=80)
 p.add_argument("--temperature", type=float, default=0.0,   help="0 = greedy, best for accuracy")
 p.add_argument("--machine-b",   default=os.environ.get("MACHINE_B", "172.31.7.166"))
+p.add_argument("--model", default=os.environ.get("BENCH_MODEL", "mistralai/Mistral-7B-Instruct-v0.3"))
 p.add_argument("--haystack-kb", type=int,   default=16,    help="Target haystack size in KB")
 p.add_argument("--positions",   type=int,   default=4,     help="Needle depth points to test")
 p.add_argument("--repeats",     type=int,   default=3,     help="Queries per position (1 miss + N-1 hits)")
@@ -129,7 +129,7 @@ def _b_stats():
     try:
         import grpc, sys as _sys
         _sys.path.insert(0, os.path.join(os.path.dirname(__file__),
-                         "LMCache/lmcache/v1/storage_backend"))
+                         "..", "LMCache/lmcache/v1/storage_backend"))
         import evicpress_pb2 as pb2, evicpress_pb2_grpc as grpc2
         ch = grpc.insecure_channel(f"{args.machine_b}:50051")
         s  = grpc2.EvicPressServiceStub(ch).GetStats(pb2.StatsRequest(), timeout=1)
@@ -141,7 +141,7 @@ def _b_stats():
 # ── Load model ─────────────────────────────────────────────────────────────────
 print("[niah] Loading model…", flush=True)
 llm = LLM(
-    model="mistralai/Mistral-7B-Instruct-v0.3",
+    model=args.model,
     enable_prefix_caching=True,
     max_model_len=16384,
     kv_transfer_config=KVTransferConfig(
@@ -197,7 +197,7 @@ depth_points = [round(i / (args.positions - 1), 4) if args.positions > 1 else 0.
                 for i in range(args.positions)]
 
 print(f"\n{SEP}")
-print(f"  Needle-in-a-Haystack  |  Model: Llama-3.1-8B-Instruct")
+print(f"  Needle-in-a-Haystack  |  Model: {args.model}")
 print(f"  Machine B  : {args.machine_b}:50051")
 print(f"  Haystack   : {actual_kb:.1f} KB  ({len(base_haystack):,} chars)")
 print(f"  Positions  : {args.positions}  depths={[f'{d:.0%}' for d in depth_points]}")
@@ -349,6 +349,7 @@ if args.output_json:
             "repeats":       args.repeats,
             "temperature":   args.temperature,
             "machine_b":     args.machine_b,
+            "model":         args.model,
         },
         "trials":   results,
         "position_summaries": position_summaries,
