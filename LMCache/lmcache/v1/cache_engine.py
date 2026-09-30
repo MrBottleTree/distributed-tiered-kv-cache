@@ -1658,16 +1658,23 @@ class LMCacheEngine:
                 location=location,
             )
 
-            for (key, start, end), memory_obj in zip(blocks, memory_objs, strict=False):
+            for index, ((key, start, end), memory_obj) in enumerate(
+                zip(blocks, memory_objs, strict=False)
+            ):
                 if memory_obj is None:
                     logger.warning(
                         "The cache block is in the storage, but it can't be retrieved"
                     )
                     if (
                         last_failed_block_start is None
-                        or last_failed_block_start < start
+                        or last_failed_block_start > start
                     ):
                         last_failed_block_start = start
+                    # A missing head invalidates its parent and the reused prefix
+                    # ends here. Later assembled buffers must not leak references.
+                    for unused in memory_objs[index + 1:]:
+                        if unused is not None:
+                            unused.ref_count_down()
                     break
                 reordered_chunks.append((key, memory_obj, start, end))
                 tot_kv_size += memory_obj.get_size()
@@ -1676,11 +1683,14 @@ class LMCacheEngine:
         if last_failed_block_start is not None:
             ret_mask[last_failed_block_start:] = False
 
-            reordered_chunks = [
-                (key, memory_obj, start, end)
-                for key, memory_obj, start, end in reordered_chunks
-                if end < last_failed_block_start
-            ]
+            retained = []
+            for key, memory_obj, start, end in reordered_chunks:
+                if end <= last_failed_block_start:
+                    retained.append((key, memory_obj, start, end))
+                else:
+                    tot_kv_size -= memory_obj.get_size()
+                    memory_obj.ref_count_down()
+            reordered_chunks = retained
         return reordered_chunks, tot_kv_size
 
     def _broadcast_or_receive_memory_objs(

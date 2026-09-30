@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """
 GRPCBackend — LMCache storage plugin that talks to Machine B (EvicPress).
 
@@ -8,12 +9,13 @@ Tiering is INCLUSIVE: Machine B always holds a Tier 3 canonical copy of every
 block. When Machine B signals tier=1 in StoreResponse, Machine A mirrors the
 block into its LocalCPUBackend as a pure cache copy. If Machine A evicts that
 copy under its own LRU the block is simply dropped — Machine B still has it.
-There is NO T1 return protocol.
+Head mode instead owns independent mirrors in HeadSegmentCache and reconciles
+their physical bytes with B. Assembled parents are never cached in Tier 1.
 
 Serialization:
   KV tensors are serialized with torch.save() into raw bytes. Machine B stores
-  them opaquely — it has no knowledge of tensor shapes or dtypes. On retrieval,
-  torch.load() reconstructs the original tensor exactly.
+  full chunks opaquely in legacy mode. Head mode validates portable geometry.
+  FP16 restoration is exact; INT8/INT4 backing is lossy even after dequantization.
 
 Key encoding:
   CacheEngineKey (model_name, world_size, worker_id, chunk_hash, dtype) is
@@ -26,18 +28,25 @@ Prefetch:
   imminent get_blocking() call.
 """
 
+# Standard
+import hashlib
 import io
-from typing import Callable, List, Optional, Sequence, Union
-from concurrent.futures import Future
+import json
+from typing import Callable, List, Optional, Sequence
 
+# Third Party
 import torch
 import grpc
 
+# First Party
 from lmcache.utils import CacheEngineKey
 from lmcache.v1.memory_management import MemoryFormat, MemoryObj
 from lmcache.v1.storage_backend.abstract_backend import StoragePluginInterface
 from lmcache.v1.storage_backend import evicpress_pb2
 from lmcache.v1.storage_backend import evicpress_pb2_grpc
+
+# Local
+from .head_client import HeadClient
 
 
 class GRPCBackend(StoragePluginInterface):
@@ -54,9 +63,7 @@ class GRPCBackend(StoragePluginInterface):
 
         self.server_addr = config.extra_config.get("grpc_server", "localhost:50051")
 
-        # quality_score sent to Machine B for every block.
-        # 1.0 = highly sensitive to compression (preserve as-is).
-        # Tune this once the compression profiler is wired up.
+        # Legacy override: B computes its compressibility proxy when this is 1.
         self._quality_score: float = float(
             config.extra_config.get("grpc_quality_score", 1.0)
         )
@@ -70,7 +77,68 @@ class GRPCBackend(StoragePluginInterface):
         ]
         self.channel = grpc.insecure_channel(self.server_addr, options=options)
         self.stub    = evicpress_pb2_grpc.EvicPressServiceStub(self.channel)
+        granularity = config.extra_config.get("grpc_granularity", "chunk")
+        if granularity not in ("chunk", "head"):
+            raise ValueError("grpc_granularity must be chunk or head")
+        self.manages_head_cache = granularity == "head"
+        self.head_client = None
+        if self.manages_head_cache:
+            # Fail explicitly rather than reshape unsupported vLLM layouts.
+            if (metadata is None or metadata.world_size != 1 or metadata.use_mla
+                    or metadata.get_num_groups() != 1 or metadata.kv_dtype != torch.float16
+                    or config.use_layerwise or config.enable_p2p or config.enable_async_loading
+                    or config.enable_pd or config.extra_config.get("enable_nixl_storage")):
+                raise ValueError("head mode requires single-GPU, single-group, non-layerwise FP16 KV; P2P/async unsupported")
+            layers, kv, chunk_size, kv_heads, dim = metadata.kv_shape
+            if kv != 2:
+                raise ValueError("head mode requires K and V")
+            revision = config.extra_config.get("grpc_model_revision")
+            if not revision:
+                raise ValueError("head mode requires pinned grpc_model_revision")
+            fingerprint = [metadata.model_name, revision, layers, kv_heads, dim,
+                           chunk_size, "FP16-KV_2LTD-full-positions-v1"]
+            namespace = hashlib.sha256(json.dumps(fingerprint).encode()).hexdigest()
+            # MixedMemoryAllocator is already the non-P2P default. Head mirrors
+            # and full-parent staging share its budget; reserve room for assembly.
+            cache_bytes = int(config.max_local_cpu_size * 1024**3 * 0.8) if local_cpu_backend else 0
+            self.head_client = HeadClient(self.stub, namespace, layers, kv_heads,
+                dim, chunk_size, self.allocate_head_buffer, cache_bytes, max_msg)
         print(f"[GRPCBackend] connected to Machine B at {self.server_addr}")
+
+    def allocate_head_buffer(self, shape: Sequence[int], dtype: torch.dtype) -> Optional[MemoryObj]:
+        """Allocate from the existing shared CPU pool without spinning on pressure."""
+        if self.local_cpu_backend is None:
+            return None
+        return self.local_cpu_backend.allocate(torch.Size(shape), dtype,
+            fmt=MemoryFormat.KV_2LTD, eviction=False, busy_loop=False)
+
+    def store_head_segment(self, key: CacheEngineKey, obj: MemoryObj) -> bool:
+        """Store all layer/KV-head segments for one context-sensitive parent."""
+        if self.head_client is None:
+            raise ValueError("head mode is disabled")
+        return self.head_client.store_head_segment(self._encode_key(key), obj.get_tensor(0))
+
+    def gather_segment(self, keys: Sequence[CacheEngineKey]) -> list[Optional[MemoryObj]]:
+        """Restore complete parents; any unavailable head is a whole-parent miss."""
+        if self.head_client is None:
+            raise ValueError("head mode is disabled")
+        return self.head_client.gather_segment([self._encode_key(k) for k in keys])
+
+    def batched_contains(self, keys: Sequence[CacheEngineKey], pin: bool = False) -> int:
+        """Check the contiguous hit prefix using bounded head-group requests."""
+        if self.head_client is None:
+            return super().batched_contains(keys, pin)
+        try:
+            return self.head_client.contains_many([self._encode_key(k) for k in keys], pin)
+        except (grpc.RpcError, ValueError) as exc:
+            print(f"[HeadCache] lookup failed: {exc}")
+            return 0
+
+    def batched_get_blocking(self, keys: Sequence[CacheEngineKey]) -> list[Optional[MemoryObj]]:
+        """Batch remote head retrieval; preserve legacy behavior in chunk mode."""
+        if self.head_client is None:
+            return super().batched_get_blocking(keys)
+        return self.gather_segment(keys)
 
     # ------------------------------------------------------------------ #
     #  Key encoding                                                        #
@@ -113,6 +181,8 @@ class GRPCBackend(StoragePluginInterface):
         fire a non-blocking Prefetch hint so Machine B can promote it to RAM
         before the upcoming get_blocking().
         """
+        if self.head_client is not None:
+            return self.batched_contains([key], pin) == 1
         if self.local_cpu_backend is not None and self.local_cpu_backend.contains(key, pin=pin):
             return True
 
@@ -146,7 +216,15 @@ class GRPCBackend(StoragePluginInterface):
     ) -> None:
         """Store KV blocks in Machine B. Synchronous (simple, correct)."""
         for key, obj in zip(keys, objs):
-            self._store_one(key, obj)
+            if self.head_client is not None:
+                try:
+                    if not self.store_head_segment(key, obj):
+                        continue
+                except (grpc.RpcError, ValueError) as exc:
+                    print(f"[HeadCache] store failed: {exc}")
+                    continue
+            else:
+                self._store_one(key, obj)
             if on_complete_callback:
                 try:
                     on_complete_callback(key)
@@ -193,6 +271,8 @@ class GRPCBackend(StoragePluginInterface):
         Returns None on miss. Machine B handles tier selection internally
         (Tier 2 RAM preferred, falls back to Tier 3 disk).
         """
+        if self.head_client is not None:
+            return self.gather_segment([key])[0]
         block_id = self._encode_key(key)
         print(f"[GRPCBackend] GET block={block_id[:32]}…")
         try:
@@ -236,6 +316,8 @@ class GRPCBackend(StoragePluginInterface):
             return TensorMemoryObj(raw_data, meta, parent_allocator=None)
 
     def remove(self, key: CacheEngineKey, force: bool = True) -> bool:
+        if self.head_client is not None:
+            return self.head_client.remove(self._encode_key(key), force)
         block_id = self._encode_key(key)
         try:
             resp = self.stub.Delete(
@@ -247,13 +329,19 @@ class GRPCBackend(StoragePluginInterface):
             return False
 
     def pin(self, key: CacheEngineKey) -> bool:
+        if self.head_client is not None:
+            return self.batched_contains([key], pin=True) == 1
         return True   # Machine B manages eviction; no pin concept yet
 
     def unpin(self, key: CacheEngineKey) -> bool:
+        if self.head_client is not None:
+            return self.head_client.unpin(self._encode_key(key))
         return True
 
     def get_allocator_backend(self):
         return self.local_cpu_backend
 
     def close(self) -> None:
+        if self.head_client is not None:
+            self.head_client.close()
         self.channel.close()

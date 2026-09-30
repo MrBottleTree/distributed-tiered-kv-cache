@@ -34,12 +34,12 @@ sys.path.insert(0, str(ROOT / "benchmarks"))
 import suite
 from model_settings import tokenizer_identity, validate_weight_config
 
-UNIT_FILES = ("test_benchmark_suite.py", "test_attention_probe.py", "test_new_machine_runner.py")
+UNIT_FILES = ("test_benchmark_suite.py", "test_attention_probe.py", "test_new_machine_runner.py", "test_head_segments.py")
 # Config files use these same names, with underscores instead of CLI hyphens.
 CONFIG_KEYS = ("mode", "manifest", "test", "remote_profile", "repeats",
                "b_host", "b_dashboard_url", "b_data_dir", "b_ssh",
                "b_config_path", "b_restart_command", "b_repo_path", "b_commit",
-               "b_base_config", "timeout_minutes", "allow_no_remote_hits")
+               "b_base_config", "timeout_minutes", "allow_no_remote_hits", "granularity")
 
 
 def utc_now() -> str:
@@ -50,6 +50,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, help="Optional JSON settings; CLI overrides them")
     parser.add_argument("--mode", choices=("unit", "single", "remote", "both"), default="unit")
+    parser.add_argument("--granularity", choices=("chunk", "head"), default="chunk")
     parser.add_argument("--setup", action="store_true", help="Install into .validation-venv (Linux)")
     parser.add_argument("--manifest", type=Path, default=suite.DEFAULT_MANIFEST)
     parser.add_argument("--test", action="append", help="Official workload name; repeat to select several")
@@ -92,6 +93,8 @@ def parse_args(argv=None):
     args.b_base_config = Path(args.b_base_config).resolve()
     if args.mode not in ("unit", "single", "remote", "both"):
         parser.error("Invalid mode in config")
+    if args.granularity not in ("chunk", "head"):
+        parser.error("Invalid granularity in config")
     if not isinstance(args.repeats, int) or args.repeats < 2:
         parser.error("--repeats must be >= 2 to measure cold/warm behavior")
     if not isinstance(args.timeout_minutes, (int, float)) or args.timeout_minutes <= 0:
@@ -337,13 +340,23 @@ def check_remote(args, manifest):
         raise RuntimeError("Wrong LMCache checkout; install this repo with --setup")
     importlib.import_module("lmcache.v1.storage_backend.grpc_backend")
     importlib.import_module("lmcache.integration.vllm.vllm_v1_adapter")
+    import grpc
+    from lmcache.v1.storage_backend import evicpress_pb2 as pb, evicpress_pb2_grpc as rpc
+    # Read-only RPC: manual one-host campaigns must not alter the utility
+    # denominator during preflight before the actual cold benchmark.
+    with grpc.insecure_channel(f"{args.b_host}:50051") as channel:
+        stats = rpc.EvicPressServiceStub(channel).GetStats(pb.StatsRequest(), timeout=10)
+        if args.granularity == "head" and stats.head_schema_version != 1:
+            raise RuntimeError("Machine B gRPC lacks head schema v1")
     with socket.create_connection((args.b_host, 50051), timeout=5):
         pass
     state = suite.b_state(args.b_dashboard_url or f"http://{args.b_host}:8080")
     print("Machine B configuration:", state["config"])
+    if args.granularity == "head" and state["config"].get("head_schema_version") != 1:
+        raise RuntimeError("Machine B lacks head schema v1; update both repositories")
     if not args.b_ssh:
         profile = manifest["profiles"][(args.remote_profile or ["remote_fp16"])[0]]
-        suite.verify_b(state, profile, args.b_data_dir)
+        suite.verify_b(state, profile, args.b_data_dir, args.granularity)
         print("Manual B run: ensure service was restarted with a fresh empty data directory")
 
 
@@ -471,7 +484,8 @@ def run_campaign(args):
         if not shutil.which("git") and not args.dry_run:
             raise RuntimeError("Install git to fetch pinned official scorer sources")
         campaign.step("dependency-consistency", [str(python), "-m", "pip", "check"])
-        check_cmd = [str(python), str(ROOT / "run_tests.py"), "--manifest", str(args.manifest)]
+        check_cmd = [str(python), str(ROOT / "run_tests.py"), "--manifest", str(args.manifest),
+                     "--granularity", args.granularity]
         campaign.step("runtime-imports", check_cmd + ["--_check", "runtime"])
         campaign.step("gpu-driver", ["nvidia-smi"])
         campaign.step("gpu-runtime-and-port", check_cmd + ["--_check", "gpu"])
@@ -489,7 +503,12 @@ def run_campaign(args):
                               "ConnectTimeout=10", args.b_ssh, "true"])
             campaign.step("remote-imports-and-connectivity", check_cmd + ["--_check", "remote"] +
                           remote_args + ["--remote-profile", next(n for n in profiles if n != "plain")])
-            campaign.step("remote-grpc-roundtrip", [str(python), str(ROOT / "tests" / "smoke_test_b.py")])
+            if args.b_ssh:
+                # The profile runner restarts B afterwards, clearing smoke data
+                # and counters. Manual/local runs use only the read-only ping.
+                campaign.step("remote-grpc-roundtrip", [str(python), str(ROOT / "tests" / "smoke_test_b.py")])
+            else:
+                print("[INFO] Read-only gRPC ping passed; KV smoke omitted to keep B counters cold")
         if args.preflight_only:
             print("Preflight passed; model download and GPU benchmarks were not run")
             return path
@@ -502,7 +521,7 @@ def run_campaign(args):
             output = path / group / name
             # Retry a failed profile as a whole: partial cold/warm runs are not merged.
             command = runner + ["run", "--profile", name, "--repeats", str(args.repeats),
-                                "--output-dir", str(output)] + selected
+                                "--output-dir", str(output), "--granularity", args.granularity] + selected
             if group == "remote":
                 command += remote_args
             campaign.step("benchmark-" + name, command, resume=bool(args.resume),

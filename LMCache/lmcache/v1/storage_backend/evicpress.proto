@@ -26,6 +26,14 @@ service EvicPressService {
 
   // GetStats: pull current cache stats for monitoring.
   rpc GetStats (StatsRequest) returns (StatsResponse);
+
+  // Optional head-granularity path. Legacy whole-chunk RPCs stay unchanged.
+  rpc StoreHeads (HeadStoreRequest) returns (HeadGroupResponse);
+  rpc LookupHeads (HeadReadRequest) returns (HeadBatchResponse);
+  rpc RetrieveHeads (HeadReadRequest) returns (HeadBatchResponse);
+  rpc DeleteHeads (HeadDeleteRequest) returns (DeleteResponse);
+  rpc ReleaseHeads (HeadLeaseRequest) returns (DeleteResponse);
+  rpc SyncHeadTier1 (HeadTier1Request) returns (HeadTier1Response);
 }
 
 // --- Lookup ---
@@ -41,7 +49,7 @@ message LookupResponse {
 message StoreRequest {
   string block_id      = 1;
   bytes  data          = 2;  // Serialized KV tensor (opaque bytes)
-  float  quality_score = 3;  // 0.0-1.0. How sensitive this block is to compression.
+  float  quality_score = 3;  // 0.0–1.0. How sensitive this block is to compression.
 }
 message StoreResponse {
   bool   success = 1;
@@ -92,4 +100,52 @@ message StatsResponse {
   int64 tier1_blocks      = 11;
   int64 tier1_bytes       = 12;
   int64 tier1_promotions  = 13;
+  int32 head_schema_version = 14;
+  int64 parent_hits = 15;
+  int64 parent_misses = 16;
+  int64 head_rpc_calls = 17;
+  int64 head_wire_bytes = 18;
 }
+
+// Descriptors contain only portable geometry/identity, never allocator pointers.
+message HeadPayload { string block_id = 1; bytes data = 2; }
+message HeadStoreRequest {
+  string descriptor_json = 1;
+  repeated HeadPayload heads = 2;
+  string client_id = 3;
+}
+message HeadStatus {
+  string block_id = 1;
+  bool found = 2;
+  int32 tier = 3;
+  string quant_level = 4;
+  bytes data = 5;
+  bool cache_in_tier1 = 6;
+}
+message HeadGroupResponse {
+  string parent_id = 1;
+  bool found = 2;
+  string descriptor_json = 3;
+  repeated HeadStatus heads = 4;
+  string lease_id = 5;
+  string message = 6;
+}
+message HeadReadItem {
+  string parent_id = 1;
+  repeated string local_ids = 2;
+  string lease_id = 3;
+}
+message HeadReadRequest {
+  repeated HeadReadItem parents = 1;
+  string client_id = 2;
+  bool pin = 3;
+}
+message HeadBatchResponse { repeated HeadGroupResponse parents = 1; }
+message HeadDeleteRequest {
+  repeated string parent_ids = 1;
+  bool force = 2;
+}
+message HeadLeaseRequest { repeated string lease_ids = 1; string client_id = 2; }
+message HeadTier1Entry { string block_id = 1; int64 nbytes = 2; }
+message HeadTier1Request { string client_id = 1; repeated HeadTier1Entry entries = 2; }
+message HeadTier1Response { repeated string revoked_ids = 1; }

@@ -17,6 +17,9 @@ extra_config:
   grpc_server: "172.31.12.251:50051"
 
   grpc_quality_score: 1.0
+  # Keep the legacy baseline by default; benchmark --granularity head overrides.
+  grpc_granularity: chunk
+  grpc_model_revision: "95b1295ddd1a8673117cdc7bd2a4da2a457bb3f7"
 
   # Maximum gRPC message size in bytes (must match machine_b/config/config.yaml).
   grpc_max_message_bytes: 536870912  # 512 MB
@@ -28,6 +31,7 @@ enable_pd: false
 # LocalCPUBackend is required as a staging allocator for tensors received from
 # Machine B via gRPC. Even though all persistent storage is on Machine B,
 # LMCache needs this buffer to reconstruct MemoryObj on retrieval.
-# 2 GB is sufficient for staging; it does NOT act as a local KV cache tier.
+# This pool backs both Tier 1 mirrors and reconstruction staging. In head mode,
+# independently allocated head mirrors use at most 80%; staging shares the pool.
 local_cpu: true
 max_local_cpu_size: 2

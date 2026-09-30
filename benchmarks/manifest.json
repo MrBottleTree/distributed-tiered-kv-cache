@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "storage": {"default_granularity": "chunk", "supported_granularities": ["chunk", "head"], "head_schema_version": 1},
   "model": "solidrust/Mistral-7B-Instruct-v0.3-AWQ",
   "model_revision": "95b1295ddd1a8673117cdc7bd2a4da2a457bb3f7",
   "weight_quantization": {"method": "awq", "bits": 4},

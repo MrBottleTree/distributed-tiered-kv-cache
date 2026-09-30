@@ -21,16 +21,18 @@ class NewMachineRunnerTest(unittest.TestCase):
             "--b-host", "storage.example", "--b-ssh", "user@storage.example",
             "--b-config-path", "/opt/b/config.yaml", "--b-restart-command", "restart-b",
             "--remote-profile", "all",
+            "--granularity", "head",
         ])
         with mock.patch.object(run_tests.Campaign, "step", side_effect=lambda n, c, **kw:
                                commands.append((n, c))), mock.patch("builtins.print"):
             run_tests.run_campaign(args)
         names = [name for name, _ in commands]
-        self.assertEqual(names[:3], ["unit-" + Path(f).stem for f in run_tests.UNIT_FILES])
+        self.assertEqual(names[:len(run_tests.UNIT_FILES)], ["unit-" + Path(f).stem for f in run_tests.UNIT_FILES])
         benchmarks = [(n, c) for n, c in commands if n.startswith("benchmark-")]
         self.assertEqual(len(benchmarks), 5)
         self.assertNotIn("--b-host", benchmarks[0][1])
         self.assertTrue(all("--b-host" in c for _, c in benchmarks[1:]))
+        self.assertTrue(all(c[c.index("--granularity") + 1] == "head" for _, c in benchmarks))
         self.assertLess(names.index("remote-grpc-roundtrip"), names.index("pinned-model-download"))
 
         # Only a passed benchmark can be skipped. Failed stages run again.

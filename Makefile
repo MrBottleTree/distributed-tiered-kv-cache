@@ -25,6 +25,8 @@ proto:        ## (Re)generate gRPC Python stubs from evicpress.proto
 		--python_out=. \
 		--grpc_python_out=. \
 		evicpress.proto
+	@sed -i '/^import evicpress_pb2 as/c\if __package__:\n    from . import evicpress_pb2 as evicpress__pb2\nelse:\n    import evicpress_pb2 as evicpress__pb2' $(PROTO_DIR)/evicpress_pb2_grpc.py
+	@sed -i '1i# SPDX-License-Identifier: Apache-2.0' $(PROTO_DIR)/evicpress_pb2.py $(PROTO_DIR)/evicpress_pb2_grpc.py
 	@echo "[proto] stubs regenerated in $(PROTO_DIR)/"
 
 # ── Run ────────────────────────────────────────────────────────────────────────

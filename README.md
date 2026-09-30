@@ -1,6 +1,6 @@
 # Distributed Tiered KV Cache
 
-This is the Machine A side of a distributed KV-cache prototype. vLLM uses LMCache to send and retrieve KV blocks over gRPC; the separate `evicpress-core` repository runs Machine B's tiered storage service. Remote reuse and tiered storage are implemented. Per-head placement and attention-mass-guided decisions are future work.
+This is the Machine A side of a distributed KV-cache prototype. vLLM uses LMCache to send and retrieve KV blocks over gRPC; the separate `evicpress-core` repository runs Machine B's tiered storage service. Chunk mode remains the default; opt-in head mode independently places/quantizes K/V for one layer's shared KV head per token chunk. Attention-guided decisions remain future work. Head mode is CPU/service-tested; GPU integration is unverified.
 
 The default model is pinned [Mistral-7B-Instruct-v0.3 AWQ](https://huggingface.co/solidrust/Mistral-7B-Instruct-v0.3-AWQ/tree/95b1295ddd1a8673117cdc7bd2a4da2a457bb3f7): **4-bit model weights, FP16 activations and GPU KV cache**. The original tokenizer/revision and frozen prompts are unchanged. `run_tests.py` defaults remote runs to `remote_fp16`; selecting `remote_alpha_*` or `all` explicitly enables Machine B cache-compression experiments. Manual chats use B's existing policy, so disable B quantization separately for an FP16-only remote run. Quantized weights can change answers; use the same checkpoint across profiles and measure quality rather than assuming identical output. GPU fit/quality remain unverified. The previous FP16-weight snapshot is commit `7bf1a6f` (on a clean node checkout: `git switch --detach 7bf1a6f`).
 
@@ -17,7 +17,8 @@ vLLM / Machine A -> LMCache gRPC backend -> EvicPress / Machine B -> RAM and dis
 | `requirements.txt` | Machine A Python dependencies. |
 | `model_settings.py` | Shared pinned model/tokenizer loading options; keeps weight and KV precision separate. |
 | `lmcache_config.yaml` | LMCache configuration for the remote backend. |
-| `chat.py`, `new_chat.py` | Interactive vLLM + LMCache demonstrations using different models. |
+| `LMCache/lmcache/v1/storage_backend/head_segments.py`, `head_client.py`, `grpc_backend.py` | Head identity/position tables, byte-bounded mirrors, batched RPCs and full-chunk reconstruction; legacy chunk mode retained. |
+| `chat.py`, `new_chat.py` | Interactive vLLM + LMCache demonstrations using the pinned model. |
 | `tests/` | Smoke checks, integration diagnostics, needle retrieval, and benchmark-runner unit tests. Details below. |
 | `benchmarks/suite.py` | Manifest-driven benchmark preparation, preflight, single-profile runs, and five-profile matrix. |
 | `benchmarks/manifest.json` | Pinned model/source revisions, test definitions, and profiles. |
@@ -33,7 +34,7 @@ vLLM / Machine A -> LMCache gRPC backend -> EvicPress / Machine B -> RAM and dis
 | `.gitattributes` | Preserves frozen benchmark bytes/hashes across Windows and Linux clones. |
 | `AGENTS.md` | Repository instructions for coding agents. `Plan.md` is the concise remaining-work roadmap, not runnable code. |
 
-The `LMCache/` tree is an upstream/vendor checkout with its own code, tests, and documentation. It is intentionally unchanged and is not enumerated here.
+The `LMCache/` tree is vendored upstream code. Project-specific changes are the gRPC plugin/protocol, head helpers, storage-manager routing/write-back, and retrieval-miss buffer cleanup; the rest is not enumerated here.
 
 ## What current tests cover
 
@@ -47,8 +48,9 @@ The `LMCache/` tree is an upstream/vendor checkout with its own code, tests, and
 | `tests/test_benchmark_suite.py` | Seven GPU-free tests of model/KV settings, tokenizer provenance, profiles, config rendering, metrics, counters, and result output. |
 | `tests/test_attention_probe.py` | One synthetic CPU check of paged-key order, GQA, causal masking, and window mass. |
 | `tests/test_new_machine_runner.py` | One GPU-free check of stage order, five-profile isolation, and passed/failed resume behavior. |
+| `tests/test_head_segments.py` | One CPU check of full-position scatter/gather, reordered heads, GQA, short chunks, missing-head rejection, byte budgets/pinning and reference release. |
 
-The first five are runnable diagnostics, not a comprehensive automated correctness suite. Remote checks need Machine B; the three unit-test files do not need a GPU.
+The first five are runnable diagnostics, not a comprehensive automated correctness suite. Remote checks need Machine B; the four unit-test files do not need a GPU. B's `machine_b/tests/test_head_groups.py` checks canonical admission, leases/pressure, restart, missing heads and INT4 error bounds. With A cloned alongside B, it also runs real CPU loopback gRPC using A's client. None proves vLLM/GPU attention or recovery correctness; these checks do not measure attention mass.
 
 ## Benchmarks and profiles
 
@@ -60,6 +62,27 @@ The first five are runnable diagnostics, not a comprehensive automated correctne
 
 Profiles: `plain`, `remote_fp16`, and remote quantization with alpha 0, 1, or 5. Results include quality where supported, latency/throughput, configuration, and Machine B counters, saved under `benchmarks/results/`.
 
+## Per-head comparisons
+
+Set `extra_config.grpc_granularity: head` manually, or pass `--granularity head` to either runner. Default `chunk` preserves the earlier architecture. Both use the same five profiles and frozen prompts; plain has no connector. Head mode requires paired updated A/B commits and a pinned `grpc_model_revision`, and supports only single-GPU/single-group FP16 KV, non-layerwise synchronous loading and the existing non-P2P mixed CPU allocator. PD/NIXL/P2P/MLA modes are rejected.
+
+One unit is K/V for one layer's **KV head** and 256 tokens (short chunks supported); GQA query heads share these units. B retains canonical disk backing and the existing compressibility/frequency utility and FP16/INT8/INT4 bands per head. A's mirrors and parent assembly share the CPU pool; complete parents are not retained as a second cache. All heads/positions are required, so a missing/corrupt head returns a parent miss. Sparse attention and lower HBM allocation are not implemented.
+
+After the GPU build blocker is fixed, start B with a fresh matching FP16-profile config, then on A:
+
+```sh
+python3 run_tests.py --mode both --config hardware.json --granularity head --test ruler_niah_single_4k
+# Compare in a NEW campaign/fresh B directory, same model/capacities:
+python3 run_tests.py --mode both --config hardware.json --granularity chunk --test ruler_niah_single_4k
+# B checkout: CPU assertions and paired-client loopback (A sibling clone needed):
+cd ../evicpress-core/machine_b
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+For a local demo, run the **same B service** on `127.0.0.1`; T2/T3 then use that host's RAM/disk. Manually render/restart one matching profile with fresh directories; pass `--b-host 127.0.0.1 --b-data-dir FRESH_PATH --b-commit B_SHA` instead of SSH settings. T1/T2 share RAM; this does not test network performance. Legacy smoke scripts still exercise chunk RPCs; use the paired CPU test and official workloads for head mode.
+
+Results record granularity, parent/head counters, RPCs and tensor-payload bytes. `run.json` includes per-client head-cache and returned-assembly allocation peaks from `vllm.log`, **not process RSS or a combined live-memory peak**; measure RSS/GPU peaks on hardware. FP16 round trips must be exact; lower-bit backing is lossy. No measured head-versus-chunk improvement is claimed yet.
+
 ## First-time setup
 
 The serving setup is for Linux; Machine A needs a compatible NVIDIA GPU/driver. Clone the two repositories separately. On A, select the branch containing this runner:
@@ -70,7 +93,7 @@ cd distributed-tiered-kv-cache
 git rev-parse HEAD       # retain this revision with the experiment results
 ```
 
-**Known GPU startup blocker:** the vendored `LMCache/setup.py` currently comments out the `lmcache.c_ops` CUDA extension, although its GPU runtime imports that module. A fresh editable install therefore does not build this required extension. Resolve that build issue before remote GPU runs; local unit-test success does not establish GPU readiness. The vendored tree has not been changed in this update.
+**Known GPU startup blocker:** the vendored `LMCache/setup.py` currently comments out the `lmcache.c_ops` CUDA extension, although its GPU runtime imports that module. A fresh editable install therefore does not build this required extension. Resolve that build issue before remote GPU runs; local unit-test success does not establish GPU readiness. This build issue is not changed by head-mode support.
 
 On Machine B:
 
@@ -93,7 +116,7 @@ python3 run_tests.py --mode both --config hardware.json --dry-run  # inspect sta
 python3 run_tests.py --setup --mode single                         # first GPU node: unit tests, then all seven workloads
 python3 run_tests.py --setup --mode both --config hardware.json     # first two-node campaign: plain + remote FP16
 python3 run_tests.py --mode both --config hardware.json --remote-profile all  # explicit five-profile cache experiment
-python3 run_tests.py --mode unit                                  # nine local tests; no GPU/network/B required
+python3 run_tests.py --mode unit                                  # ten local tests; no GPU/network/B required
 ```
 
 `--setup` creates `.validation-venv`, installs pinned serving/scoring dependencies, then installs **this checkout's** LMCache and the optional probe package. Later invocations automatically use that environment; shell activation is unnecessary. Setup is explicit and does not install drivers or alter system packages. Without it, an existing environment must already contain the dependencies (CPU tests need PyYAML and PyTorch).
@@ -115,7 +138,7 @@ For the two-node run, create an ignored `hardware.json` on A, replacing the exam
 
 B must already be running and reachable on private ports `50051` and `8080`; configure noninteractive SSH and its verified host key beforehand. These explicit SSH settings authorize configuration upload and B restart for each remote profile, with a fresh disk directory. Without SSH, select one profile and pass `--b-host HOST --b-data-dir /data/kv_cache/FRESH_RUN`; manually restart B with that matching profile/directory first. `--mode single` never contacts B; `--mode remote` omits the plain baseline. Remote mode defaults to `remote_fp16`; `--remote-profile all` explicitly selects all four remote profiles, including KV-compression experiments.
 
-Stages are: setup if requested → nine unit tests → dependency/import, CUDA execution and free-port checks → pinned scorer sources/frozen-input hashes and scorer calls → B connectivity/real gRPC round trip when requested → pinned model download → benchmarks. Failures stop immediately; no automatic paid retries. Attention probing is disabled for these baseline runs. The default workloads are four RULER NIAH tasks, two LongBench pilot subsets, and LMCache long-document QA, using the existing manifest/model and two cold/warm prompt repeats. Old manual model/needle diagnostics are not all rerun automatically; they are available below and are not official benchmarks.
+Stages are: setup if requested → ten unit tests → dependency/import, CUDA execution and free-port checks → pinned scorer sources/frozen-input hashes and scorer calls → read-only B gRPC ping (plus KV smoke before an SSH-managed restart) → pinned model download → benchmarks. Cold official runs require an empty B cache and zero demand counters; restart B after manual smoke tests. Failures stop immediately; no automatic paid retries. Attention probing is disabled for these baseline runs. The default workloads are four RULER NIAH tasks, two LongBench pilot subsets, and LMCache long-document QA, using the existing manifest/model and two cold/warm prompt repeats. Old manual model/needle diagnostics are not all rerun automatically; they are available below and are not official benchmarks.
 
 ```sh
 python3 run_tests.py --mode single --test ruler_niah_single_4k     # focused first GPU pass

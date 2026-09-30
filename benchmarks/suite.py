@@ -313,8 +313,11 @@ def b_state(dashboard_url: str):
     return http_json(dashboard_url.rstrip("/") + "/api/state")
 
 
-def verify_b(state: dict, profile: dict, expected_data_dir: str | None = None):
+def verify_b(state: dict, profile: dict, expected_data_dir: str | None = None,
+             granularity: str = "chunk"):
     cfg = state["config"]
+    if granularity == "head" and cfg.get("head_schema_version") != 1:
+        raise RuntimeError("Machine B lacks head schema v1; update both repositories")
     if float(cfg["alpha"]) != float(profile["alpha"]):
         raise RuntimeError(f"Machine B alpha={cfg['alpha']}, profile requires {profile['alpha']}")
     if bool(cfg["quant_enabled"]) != bool(profile["quantization"]):
@@ -351,10 +354,16 @@ def configure_b_over_ssh(local_config: Path, ssh_target: str, remote_config: str
     raise RuntimeError("Machine B dashboard did not come up after service restart")
 
 
-def make_a_config(b_host: str, output: Path) -> None:
+def make_a_config(b_host: str, output: Path, granularity: str = "chunk",
+                  model_revision: str | None = None) -> None:
     import yaml
     config = yaml.safe_load((ROOT / "lmcache_config.yaml").read_text(encoding="utf-8"))
     config["extra_config"]["grpc_server"] = f"{b_host}:50051"
+    if granularity not in ("chunk", "head"):
+        raise ValueError("granularity must be chunk or head")
+    config["extra_config"]["grpc_granularity"] = granularity
+    if model_revision:
+        config["extra_config"]["grpc_model_revision"] = model_revision
     output.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
 
@@ -371,7 +380,7 @@ def wait_for_server(base_url: str, timeout: int = 240) -> None:
 
 @contextlib.contextmanager
 def model_server(manifest: dict, profile: dict, run_dir: Path, b_host: str | None,
-                 external_url: str | None):
+                 external_url: str | None, granularity: str = "chunk"):
     if external_url:
         wait_for_server(external_url)
         yield external_url.rstrip("/")
@@ -390,7 +399,7 @@ def model_server(manifest: dict, profile: dict, run_dir: Path, b_host: str | Non
         if not b_host:
             raise RuntimeError("Remote profile requires --b-host")
         a_cfg = run_dir / "lmcache_config.yaml"
-        make_a_config(b_host, a_cfg)
+        make_a_config(b_host, a_cfg, granularity, manifest["model_revision"])
         env["LMCACHE_CONFIG_FILE"] = str(a_cfg)
         cmd += ["--kv-transfer-config", json.dumps({
             "kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"})]
@@ -626,6 +635,25 @@ def run_legacy(name: str, test: dict, run_dir: Path, b_host: str | None,
             "note": "Project diagnostic, not an official paper benchmark."}
 
 
+def head_client_metrics(log_path: Path) -> dict:
+    """Collect latest per-process head metrics, including allocator byte peaks.
+
+    These are head-cache/returned-buffer bytes, not whole-process RSS or a
+    concurrently sampled combined memory peak. Keep process IDs separate.
+    """
+    snapshots = {}
+    if log_path.exists():
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            marker = "[HeadCache] metrics="
+            if marker in line:
+                try:
+                    row = json.loads(line.split(marker, 1)[1])
+                    snapshots[row.pop("client_id")] = row
+                except (ValueError, KeyError):
+                    continue
+    return snapshots
+
+
 def numeric_delta(after, before):
     if isinstance(after, dict) and isinstance(before, dict):
         return {key: numeric_delta(after[key], before[key])
@@ -672,6 +700,9 @@ def gpu_info():
 
 def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
     profile = manifest["profiles"][args.profile]
+    granularity = getattr(args, "granularity", "chunk")
+    if granularity == "head" and args.external_server and profile["remote"]:
+        raise RuntimeError("Head comparisons must launch a managed server to verify its configuration")
     names = args.test or ["all"]
     if names == ["all"]:
         names = [n for n, t in manifest["tests"].items() if t["kind"] != "legacy"]
@@ -706,6 +737,8 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
                 raise RuntimeError("Vendored LMCache long_doc_qa workload is missing")
     if any(manifest["tests"][n]["kind"] == "legacy" for n in names) and len(names) > 1:
         raise RuntimeError("Run legacy diagnostics one at a time; they manage their own model/process")
+    if granularity == "head" and any(manifest["tests"][n]["kind"] == "legacy" for n in names):
+        raise RuntimeError("Legacy diagnostics use chunk mode; choose an official workload for head comparisons")
     if profile["remote"] and not args.b_host:
         raise RuntimeError("Remote profile requires --b-host")
     if profile["remote"] and any(
@@ -718,7 +751,7 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
                 "Machine A must use this repo's LMCache checkout. "
                 "Run: python -m pip install -e ./LMCache")
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_id = f"{timestamp}_{args.profile}"
+    run_id = f"{timestamp}_{args.profile}_{granularity}"
     run_dir = Path(args.output_dir).resolve() / run_id
     if run_dir.exists():
         raise RuntimeError(f"Run directory already exists: {run_dir}")
@@ -728,6 +761,9 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
     metadata = {
         "run_id": run_id, "created_utc": timestamp,
         "profile_name": args.profile, "profile": profile, "tests": names,
+        "granularity": granularity if profile["remote"] else "none",
+        "head_schema_version": 1 if granularity == "head" and profile["remote"] else None,
+        "topology": "loopback" if args.b_host in ("localhost", "127.0.0.1") else "remote",
         "manifest_sha256": file_sha256(manifest_path),
         "runner_sha256": file_sha256(Path(__file__)),
         "manifest": manifest,
@@ -776,7 +812,12 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
         except OSError as exc:
             raise RuntimeError(f"Machine B gRPC {args.b_host}:50051 unreachable") from exc
         initial = b_state(b_url)
-        verify_b(initial, profile, b_data_dir if args.b_ssh or args.b_data_dir else None)
+        verify_b(initial, profile, b_data_dir if args.b_ssh or args.b_data_dir else None, granularity)
+        if any(manifest["tests"][n]["kind"] != "legacy" for n in names):
+            if (any(initial[tier]["block_count"] for tier in ("tier1", "tier2", "tier3"))
+                    or initial["stats"]["total_hits"] or initial["stats"]["total_misses"]):
+                raise RuntimeError("Cold comparison requires an empty B cache and zero demand counters; "
+                                   "restart B with a fresh data directory before this run")
         metadata["machine_b_initial"] = initial
         write_json(run_dir / "run.json", metadata)
     official = [n for n in names if manifest["tests"][n]["kind"] != "legacy"]
@@ -785,7 +826,7 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
     try:
         if official:
             with model_server(manifest, profile, run_dir, args.b_host,
-                              args.external_server) as base_url:
+                              args.external_server, granularity) as base_url:
                 for name in official:
                     test = manifest["tests"][name]
                     before = b_state(b_url) if profile["remote"] else None
@@ -796,6 +837,7 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
                         summary = run_long_doc(name, test, manifest, base_url, run_dir)
                     else:
                         raise ValueError(test["kind"])
+                    summary["granularity"] = granularity if profile["remote"] else "none"
                     if profile["remote"]:
                         after = b_state(b_url)
                         summary["machine_b_stats_delta"] = numeric_delta(
@@ -813,6 +855,9 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
                             tier: after[tier] for tier in ("tier1", "tier2", "tier3")}
                     summaries[name] = summary
                     write_json(run_dir / "summary.json", summaries)
+        if granularity == "head" and profile["remote"]:
+            metadata["head_client_metrics"] = head_client_metrics(run_dir / "vllm.log")
+            write_json(run_dir / "run.json", metadata)
         for name in legacy:
             test = manifest["tests"][name]
             before = b_state(b_url) if profile["remote"] else None
@@ -828,18 +873,20 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
         raise
     with (run_dir / "summary.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=[
-            "test", "kind", "quality_score_pct", "samples", "requests",
+            "test", "kind", "granularity", "quality_score_pct", "samples", "requests",
             "cold_ttft_p50_s", "cold_ttft_p95_s", "warm_ttft_p50_s",
             "warm_ttft_p95_s", "cold_latency_p50_s", "warm_latency_p50_s",
             "total_elapsed_s", "wall_time_s", "b_total_hits",
             "query_ttft_mean_s", "query_time_per_prompt_s",
             "warmup_time_per_prompt_s",
-            "b_tier2_hits", "b_tier3_hits", "b_misses"])
+            "b_tier2_hits", "b_tier3_hits", "b_misses", "b_parent_hits",
+            "b_parent_misses", "b_head_rpc_calls", "b_head_wire_bytes"])
         writer.writeheader()
         for name, summary in summaries.items():
             delta = summary.get("machine_b_stats_delta", {})
             writer.writerow({
                 "test": name, "kind": summary["kind"],
+                "granularity": summary.get("granularity", "chunk"),
                 **{k: summary.get(k) for k in (
                     "quality_score_pct", "samples", "requests",
                     "cold_ttft_p50_s", "cold_ttft_p95_s", "warm_ttft_p50_s",
@@ -852,6 +899,10 @@ def run_suite(args, manifest: dict, manifest_path: Path) -> Path:
                 "b_tier2_hits": delta.get("tier2_hits"),
                 "b_tier3_hits": delta.get("tier3_hits"),
                 "b_misses": delta.get("total_misses"),
+                "b_parent_hits": delta.get("parent_hits"),
+                "b_parent_misses": delta.get("parent_misses"),
+                "b_head_rpc_calls": delta.get("head_rpc_calls"),
+                "b_head_wire_bytes": delta.get("head_wire_bytes"),
             })
     print(f"Results: {run_dir}")
     return run_dir
@@ -866,6 +917,7 @@ def main(argv=None) -> int:
     p_check.add_argument("--profile", required=True)
     p_check.add_argument("--b-host")
     p_check.add_argument("--b-dashboard-url")
+    p_check.add_argument("--granularity", choices=("chunk", "head"), default="chunk")
     p_prepare = commands.add_parser("prepare", help="Pin official sources and freeze inputs")
     p_prepare.add_argument("--force", action="store_true", help="Regenerate frozen datasets")
     p_prepare.add_argument("--test", action="append",
@@ -878,6 +930,7 @@ def main(argv=None) -> int:
     p_render.add_argument("--data-dir", required=True, help="Unique B disk path for this run")
     p_render.add_argument("--output", type=Path, required=True)
     def add_run_options(option_parser):
+        option_parser.add_argument("--granularity", choices=("chunk", "head"), default="chunk")
         option_parser.add_argument("--test", action="append",
                                    help="Repeat to choose tests; default all official")
         option_parser.add_argument("--repeats", type=int, default=2,
@@ -948,7 +1001,7 @@ def main(argv=None) -> int:
                        ("matrix_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".csv"))
         matrix_path.parent.mkdir(parents=True, exist_ok=True)
         fields = [
-            "profile", "test", "run_dir", "kind", "quality_score_pct",
+            "profile", "test", "run_dir", "kind", "granularity", "quality_score_pct",
             "cold_ttft_p50_s", "warm_ttft_p50_s",
             "query_ttft_mean_s", "query_time_per_prompt_s",
             "wall_time_s", "b_tier2_hits", "b_tier3_hits", "remote_fetch_verified",
@@ -963,6 +1016,7 @@ def main(argv=None) -> int:
                 matrix_rows.append({
                     "profile": name, "test": test_name, "run_dir": str(output),
                     "kind": summary["kind"],
+                    "granularity": summary.get("granularity"),
                     "quality_score_pct": summary.get("quality_score_pct"),
                     "cold_ttft_p50_s": summary.get("cold_ttft_p50_s"),
                     "warm_ttft_p50_s": summary.get("warm_ttft_p50_s"),
@@ -1004,7 +1058,7 @@ def main(argv=None) -> int:
                 parser.error("Remote profile needs --b-host")
             url = args.b_dashboard_url or f"http://{args.b_host}:8080"
             state = b_state(url)
-            verify_b(state, profile)
+            verify_b(state, profile, granularity=args.granularity)
             with socket.create_connection((args.b_host, 50051), timeout=5):
                 pass
             print("Machine B:", state["config"])

@@ -4,7 +4,7 @@
 
 - This checkout contains the Machine A integration, benchmark runner, and evaluation scripts. Machine B's EvicPress service is maintained in the separate `evicpress-core` repository; do not edit that repository unless the task asks for it.
 - Treat `LMCache/` as a vendored/upstream tree. Do not modify its source, tests, or documentation unless a task explicitly requires a change there. Its own `AGENTS.md` contains the local instructions for that subtree.
-- The current implementation uses vLLM/LMCache with a gRPC remote backend and tiered storage. Per-head placement and attention-mass-guided eviction are planned work, not current features.
+- The implementation uses vLLM/LMCache with a gRPC backend and tiered storage. Optional head mode is CPU/service-tested but GPU-unverified; chunk mode remains the default. Attention-mass-guided eviction is planned work.
 
 ## Source of truth
 
@@ -23,7 +23,7 @@
 - Run the local harness tests with `python -m unittest discover -s tests -p test_benchmark_suite.py -v` after changing the benchmark runner or its manifest.
 - `make test-grpc MACHINE_B=HOST_OR_IP` runs the direct Machine B smoke check; `make run-stress` runs the LMCache/gRPC stress diagnostic. These require a reachable Machine B.
 - `make run` launches the vLLM integration check and may require a GPU, model download, and Machine B. Do not launch it unless the task calls for runtime testing.
-- The scripts in `tests/` are mostly manual diagnostics, not a comprehensive assertion-based correctness suite. Distinguish their output from the seven GPU-free benchmark-harness unit tests.
+- The scripts in `tests/` include manual diagnostics and ten GPU-free assertions across four unit files; use `run_tests.py --mode unit`, not blanket discovery of manual scripts. Head-mode service assertions live in the companion B checkout.
 - All model-loading entry points use `model_settings.py` and the pinned manifest. Weight quantization is separate from GPU KV dtype and Machine B compression; keep GPU KV FP16 by default and preserve frozen tokenizer provenance when changing weights.
 - Do not run paid GPU, AWS, or full remote benchmark matrices unless explicitly requested. The LongBench inputs are a 25-example-per-task pilot subset and are not paper-leaderboard results.
 - When moving or renaming a test, update every relevant reference in `Makefile`, `benchmarks/manifest.json`, and the root `README.md`.

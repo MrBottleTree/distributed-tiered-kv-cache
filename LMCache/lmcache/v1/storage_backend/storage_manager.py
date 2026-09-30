@@ -481,6 +481,7 @@ class StorageManager:
                 if (
                     backend_name not in ["LocalCPUBackend", "PDBackend"]
                     and "LocalCPUBackend" in self.storage_backends
+                    and not getattr(backend, "manages_head_cache", False)
                 ):
                     local_cpu_backend = self.storage_backends["LocalCPUBackend"]
                     assert isinstance(local_cpu_backend, LocalCPUBackend)
@@ -526,6 +527,7 @@ class StorageManager:
                     backend_name not in ["LocalCPUBackend", "PDBackend"]
                     and "LocalCPUBackend" in self.storage_backends
                     and None not in memory_objs
+                    and not getattr(storage_backend, "manages_head_cache", False)
                 ):
                     logger.debug(
                         "Storing %s objects from %s to LocalCPUBackend",
