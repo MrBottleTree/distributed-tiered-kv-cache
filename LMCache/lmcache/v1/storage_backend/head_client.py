@@ -18,6 +18,7 @@ import torch
 # Local
 from . import evicpress_pb2 as pb
 from .head_segments import HeadSegmentCache, assemble_chunk, split_chunk, validate_descriptor
+from .evicpress_transport import TransportError
 
 
 def tensor_bytes(value: torch.Tensor) -> bytes:
@@ -52,6 +53,7 @@ class HeadClient:
         self.lock = RLock()
         self.metrics = {"parent_hits": 0, "parent_misses": 0,
                         "rpc_calls": 0, "wire_bytes": 0, "cache_peak_bytes": 0,
+                        "calls": 0, "payload_bytes": 0,
                         "assembly_returned_bytes_peak": 0, "cache_bytes": 0}
         capability = self.stub.GetStats(pb.StatsRequest(), timeout=15)
         if capability.head_schema_version != 1:
@@ -121,9 +123,16 @@ class HeadClient:
                     if prefetch:
                         # One hint per batch, not one RPC per KV head.
                         hint = pb.PrefetchRequest(block_ids=prefetch)
-                        self.metrics["rpc_calls"] += 1
-                        self.metrics["wire_bytes"] += hint.ByteSize()
-                        self.stub.Prefetch.future(hint, timeout=15)
+                        self.metrics["calls"] += 1
+                        self.metrics["payload_bytes"] += hint.ByteSize()
+                        if getattr(self.stub, "is_remote", True):
+                            self.metrics["rpc_calls"] += 1
+                            self.metrics["wire_bytes"] += hint.ByteSize()
+                        if hasattr(self.stub, "submit_prefetch"):
+                            self.stub.submit_prefetch(hint, timeout=15)
+                        else:
+                            # Preserve use with raw generated stubs.
+                            self.stub.Prefetch.future(hint, timeout=15)
                     if not prefix_open:
                         return hit_count
                 finally:
@@ -185,7 +194,7 @@ class HeadClient:
                                 print(f"[HeadCache] parent miss: {exc}")
                                 self.metrics["parent_misses"] += 1
                                 output.append(None)
-                    except (grpc.RpcError, ValueError) as exc:
+                    except (grpc.RpcError, TransportError, ValueError) as exc:
                         print(f"[HeadCache] retrieve failed: {exc}")
                         output.extend([None] * len(batch))
                         self.metrics["parent_misses"] += len(batch)
@@ -227,10 +236,16 @@ class HeadClient:
             self._sync()
 
     def _rpc(self, method: Any, request: Any) -> Any:
-        self.metrics["rpc_calls"] += 1
-        self.metrics["wire_bytes"] += request.ByteSize()
+        self.metrics["calls"] += 1
+        self.metrics["payload_bytes"] += request.ByteSize()
+        remote = getattr(self.stub, "is_remote", True)
+        if remote:
+            self.metrics["rpc_calls"] += 1
+            self.metrics["wire_bytes"] += request.ByteSize()
         response = method(request, timeout=30)
-        self.metrics["wire_bytes"] += response.ByteSize()
+        self.metrics["payload_bytes"] += response.ByteSize()
+        if remote:
+            self.metrics["wire_bytes"] += response.ByteSize()
         return response
 
     def _validate(self, d: dict, parent: str) -> None:
@@ -303,8 +318,8 @@ class HeadClient:
                 client_id=self.client_id, entries=[pb.HeadTier1Entry(block_id=k, nbytes=v) for k, v in inventory.items()]))
             for key in response.revoked_ids:
                 self.cache.remove(key)
-        except grpc.RpcError as exc:
-            print(f"[HeadCache] inventory sync deferred: {exc.details()}")
+        except (grpc.RpcError, TransportError) as exc:
+            print(f"[HeadCache] inventory sync deferred: {exc}")
         # Preserve snapshots even if the worker is terminated before close().
         snapshot = {"client_id": self.client_id, **self.metrics}
         print(f"[HeadCache] metrics={json.dumps(snapshot, sort_keys=True)}", flush=True)
@@ -314,7 +329,7 @@ class HeadClient:
             return
         try:
             self._rpc(self.stub.ReleaseHeads, pb.HeadLeaseRequest(lease_ids=ids, client_id=self.client_id))
-        except grpc.RpcError:
+        except (grpc.RpcError, TransportError):
             pass  # B expires leases if the connection is lost.
 
     def _release(self, parent: str) -> None:

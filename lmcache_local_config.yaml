@@ -1,0 +1,19 @@
+# Direct-local prototype configuration; the existing benchmark manifest is unchanged.
+storage_plugins:
+  - evicpress_local
+extra_config:
+  evicpress_backend: local
+  # Copy evicpress_local_config.yaml here, or replace with its absolute node path.
+  evicpress_config_path: /data/evicpress-local/config.yaml
+  evicpress_granularity: chunk  # head is supported with the same restrictions as remote head mode
+  # Matches the current pilot checkpoint; change alongside the model in later benchmark work.
+  evicpress_model_revision: "95b1295ddd1a8673117cdc7bd2a4da2a457bb3f7"
+  evicpress_max_message_bytes: 536870912
+chunk_size: 256
+save_unfull_chunk: true
+enable_pd: false
+enable_scheduler_bypass_lookup: false
+enable_async_loading: false
+local_cpu: true
+# Existing pilot pool, not the planned 32K research configuration.
+max_local_cpu_size: 2

@@ -1,0 +1,34 @@
+# Same manager/policy, with RAM and canonical disk on Machine A.
+evicpress:
+  alpha: 1.0
+tier1:
+  capacity_bytes: 2147483648  # Accounting ledger, inside LMCache's CPU pool
+  bandwidth_bytes_per_sec: 53687091200
+tier2:
+  capacity_bytes: 4294967296  # Local manager RAM
+  bandwidth_bytes_per_sec: 53687091200
+tier3:
+  capacity_bytes: 42949672960  # Local disk; requires available space
+  data_dir: /data/evicpress-local/cache  # Absolute, exclusive, new directory
+  bandwidth_bytes_per_sec: 3758096384
+prefetch:
+  enabled: true
+  max_queue_size: 64
+# Loader compatibility only: the local client never starts either service.
+server:
+  host: 127.0.0.1
+  port: 0
+  max_message_bytes: 536870912
+dashboard:
+  host: 127.0.0.1
+  port: 0
+logging:
+  max_recent_ops: 300
+quantization:
+  enabled: true  # Set false for exact FP16 backing; independent of model-weight precision
+placement:
+  bands:
+    - {name: hot, min_utility: 0.8, tiers: [1, 2, 3], quant: fp16}
+    - {name: warm, min_utility: 0.3, tiers: [2, 3], quant: fp16}
+    - {name: cool, min_utility: 0.1, tiers: [2, 3], quant: int8}
+    - {name: cold, min_utility: 0.0, tiers: [3], quant: int4}

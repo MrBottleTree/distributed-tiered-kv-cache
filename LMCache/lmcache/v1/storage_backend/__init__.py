@@ -46,6 +46,7 @@ def storage_plugin_launcher(
     local_cpu_backend: Optional[LocalCPUBackend],
     dst_device: str,
     storage_backends: OrderedDict[str, StorageBackendInterface],
+    skip_plugins: Optional[AbstractSet[str]] = None,
 ) -> None:
     """
     Loads custom storage backends based on configuration.
@@ -56,6 +57,8 @@ def storage_plugin_launcher(
     # Get the list of allowed external backends if configured
     storage_plugins = set(config.storage_plugins) if config.storage_plugins else set()
     if storage_plugins and not config.extra_config:
+        if "evicpress_local" in storage_plugins:
+            raise ValueError("Required local backend has no configuration")
         logger.warning(
             "storage_plugins=%s is set but extra_config is empty; "
             "plugin settings must be provided under extra_config, e.g. "
@@ -67,6 +70,10 @@ def storage_plugin_launcher(
         return
 
     for storage_plugin in storage_plugins:
+        if storage_plugin in (skip_plugins or set()):
+            continue
+        required = storage_plugin == "evicpress_local" or config.extra_config.get(
+            f"storage_plugin.{storage_plugin}.required", False)
         try:
             module_path = config.extra_config.get(
                 f"storage_plugin.{storage_plugin}.module_path"
@@ -76,6 +83,8 @@ def storage_plugin_launcher(
             )
 
             if not module_path or not class_name:
+                if required:
+                    raise ValueError(f"Required backend {storage_plugin} missing module_path or class_name")
                 logger.warning(
                     f"Backend {storage_plugin} missing module_path or class_name"
                 )
@@ -108,6 +117,8 @@ def storage_plugin_launcher(
 
         except Exception as e:
             logger.error(f"Failed to create backend {storage_plugin}: {str(e)}")
+            if required:
+                raise RuntimeError(f"Required storage backend {storage_plugin} failed to initialize") from e
 
 
 def CreateStorageBackends(
@@ -235,14 +246,24 @@ def CreateStorageBackends(
 
     if not config.enable_pd or config.local_cpu:
         # Load storage backends from configuration
-        storage_plugin_launcher(
-            config,
-            metadata,
-            loop,
-            local_cpu_backend,
-            dst_device,
-            storage_backends,
-        )
+        try:
+            storage_plugin_launcher(
+                config,
+                metadata,
+                loop,
+                local_cpu_backend,
+                dst_device,
+                storage_backends,
+                skip_plugins=_skip,
+            )
+        except BaseException:
+            # Only close new resources; reused allocators belong to the caller.
+            for backend in reversed(list(storage_backends.values())):
+                try:
+                    backend.close()
+                except Exception:
+                    logger.exception("Backend cleanup after initialization failure")
+            raise
 
     # Only wrap if audit is enabled in config
     if config.extra_config is not None and config.extra_config.get(

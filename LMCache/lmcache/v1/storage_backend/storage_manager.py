@@ -43,6 +43,7 @@ from lmcache.v1.storage_backend.abstract_backend import (
     StorageBackendInterface,
 )
 from lmcache.v1.storage_backend.local_cpu_backend import LocalCPUBackend
+from lmcache.v1.storage_backend.evicpress_config import configure_evicpress_plugin
 
 if TYPE_CHECKING:
     # First Party
@@ -228,6 +229,8 @@ class StorageManager:
     ):
         self.config = config
         self.metadata = metadata
+        # Resolve before starting threads, so invalid local selections fail cleanly.
+        configure_evicpress_plugin(self.config)
         self.loop = asyncio.new_event_loop()
 
         self.thread = threading.Thread(
@@ -241,39 +244,16 @@ class StorageManager:
         self.manager_lock = threading.Lock()
         self.lmcache_worker = lmcache_worker
 
-        # ── gRPC storage-plugin injection ─────────────────────────────────────
-        # Must run BEFORE create_backends() so that CreateStorageBackends and
-        # storage_plugin_launcher see the updated config.
-        #
-        # Why each field is needed:
-        #   storage_plugins  – tells the launcher which plugin names to load.
-        #   extra_config     – carries the module/class path that
-        #                      storage_plugin_launcher uses for dynamic import.
-        #   enable_pd=False  – the launcher is guarded by
-        #                      `if not config.enable_pd or config.local_cpu`
-        #                      so PD mode would skip plugin loading entirely.
-        #
-        # We only *fill in* keys the caller didn't already provide — the
-        # grpc_server address in particular is read from the user's
-        # lmcache_config.yaml and must NEVER be clobbered here.
-        self.config.storage_plugins = ["grpc"]
-        self.config.enable_pd = False
-
-        _grpc_extra_defaults = {
-            "storage_plugin.grpc.module_path": (
-                "lmcache.v1.storage_backend.grpc_backend"
-            ),
-            "storage_plugin.grpc.class_name": "GRPCBackend",
-        }
-        if self.config.extra_config is None:
-            self.config.extra_config = {}
-        for k, v in _grpc_extra_defaults.items():
-            self.config.extra_config.setdefault(k, v)
-        # ── end gRPC injection ─────────────────────────────────────────────────
-
         # Use the unified create path so that init and
         # dynamic creation share the same logic.
-        self.create_backends()
+        try:
+            self.create_backends()
+        except BaseException:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=10)
+            if not self.thread.is_alive():
+                self.loop.close()
+            raise
 
         # the backend used for actual storage
         self.non_allocator_backends = self.get_non_allocator_backends()
@@ -1350,7 +1330,7 @@ class StorageManager:
         logger.info("Closing StorageManager...")
 
         # Close all backends
-        for name, backend in self.storage_backends.items():
+        for name, backend in reversed(list(self.storage_backends.items())):
             try:
                 logger.info(f"Closing storage backend: {name}")
                 backend.close()

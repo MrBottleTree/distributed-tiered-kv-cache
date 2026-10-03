@@ -1,6 +1,15 @@
 # Progress Report
 
-Status as of 2026-10-01. Machine A and Machine B remain separate repositories.
+Status as of 2026-10-03. Machine A and Machine B remain separate repositories.
+
+## Direct-local adaptation — Milestones 1 and 2 completed
+
+- Both checkouts use additive `feature/direct-local-baseline` branches from A `bf60c43` and B `3668180`. Original branches and distributed configurations are preserved. Record each current SHA with `git rev-parse HEAD`; commits are local, not published.
+- B is installable as `evicpress-core` with a typed `LocalEvicPressClient` wrapping the existing manager, head groups and codecs. Added exclusive local writer locking, model/layout identity, fork rejection, thread-safe bounded prefetch, failure reporting and clean shutdown. Core imports neither gRPC nor service/dashboard modules.
+- A shares tensor/mirror/head logic across `GRPCBackend` and `LocalEvicPressBackend`. Local mode creates one worker-owned manager, respects explicit plugin selection, rejects unsupported modes, fails startup on missing dependencies/configuration and has no remote fallback. Added standalone local configurations and tag-aware stable keys without changing untagged legacy keys.
+- Fixed chunk invalidation leaving a stale CPU mirror and corrupt tensor handling. Shutdown releases backend-owned head buffers before closing their allocator. Local head counters now distinguish logical calls/payload from real RPC/network traffic; zero local RPCs are checked.
+- Verification: **10 existing A unit tests, 10 new A adapter tests, and 11 B tests passed**. This includes real loopback chunk/head gRPC, FP16/INT8/INT4, warm/cold head restoration, read leases, directory ownership, key isolation, allocation exhaustion, corruption, prefetch failure and cleanup. Library installation was checked in an isolated temporary environment using Python 3.10.11 / CPU PyTorch 2.7.1; target CUDA/PyTorch versions are not verified.
+- Adapter tests substitute CPU allocation/interface objects for GPU-dependent LMCache imports. No model loading, CUDA build, node/GPU tests or benchmark campaign was run. The existing benchmark suite/manifest/frozen prompts and pilot model remain unchanged, including its first-pass-only quality scoring. Official full evaluation and local runner profiles are still next work.
 
 Head-mode companion B commit: `3668180` on `main`; pre-change B baseline: `207a894`. A's earlier runtime baseline is `37d143c`; use `git rev-parse HEAD` on each checkout to record the paired feature revisions. Commits are local; publication is not part of this change.
 

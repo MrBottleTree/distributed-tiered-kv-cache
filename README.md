@@ -1,6 +1,6 @@
 # Distributed Tiered KV Cache
 
-This is the Machine A side of a distributed KV-cache prototype. vLLM uses LMCache to send and retrieve KV blocks over gRPC; the separate `evicpress-core` repository runs Machine B's tiered storage service. Chunk mode remains the default; opt-in head mode independently places/quantizes K/V for one layer's shared KV head per token chunk. Attention-guided decisions remain future work. Head mode is CPU/service-tested; GPU integration is unverified.
+This is the Machine A side of a tiered KV-cache prototype. vLLM uses LMCache with either the original gRPC backend or a direct-local EvicPress adapter. The separate `evicpress-core` repository supplies the same manager as a service or an installed library. Direct-local mode owns one manager inside the GPU worker and uses Machine A RAM/disk, without an EvicPress server/channel. Chunk mode remains the default; opt-in head mode independently places/quantizes K/V for one layer's shared KV head per token chunk. Attention-guided decisions remain future work. Both adapters are CPU-tested; GPU integration is unverified.
 
 The default model is pinned [Mistral-7B-Instruct-v0.3 AWQ](https://huggingface.co/solidrust/Mistral-7B-Instruct-v0.3-AWQ/tree/95b1295ddd1a8673117cdc7bd2a4da2a457bb3f7): **4-bit model weights, FP16 activations and GPU KV cache**. The original tokenizer/revision and frozen prompts are unchanged. `run_tests.py` defaults remote runs to `remote_fp16`; selecting `remote_alpha_*` or `all` explicitly enables Machine B cache-compression experiments. Manual chats use B's existing policy, so disable B quantization separately for an FP16-only remote run. Quantized weights can change answers; use the same checkpoint across profiles and measure quality rather than assuming identical output. GPU fit/quality remain unverified. The previous FP16-weight snapshot is commit `7bf1a6f` (on a clean node checkout: `git switch --detach 7bf1a6f`).
 
@@ -17,6 +17,7 @@ vLLM / Machine A -> LMCache gRPC backend -> EvicPress / Machine B -> RAM and dis
 | `requirements.txt` | Machine A Python dependencies. |
 | `model_settings.py` | Shared pinned model/tokenizer loading options; keeps weight and KV precision separate. |
 | `lmcache_config.yaml` | LMCache configuration for the remote backend. |
+| `lmcache_local_config.yaml`, `evicpress_local_config.yaml` | Explicit direct-local plugin and same-host manager configuration; the pilot benchmark manifest is unchanged. |
 | `LMCache/lmcache/v1/storage_backend/head_segments.py`, `head_client.py`, `grpc_backend.py` | Head identity/position tables, byte-bounded mirrors, batched RPCs and full-chunk reconstruction; legacy chunk mode retained. |
 | `chat.py`, `new_chat.py` | Interactive vLLM + LMCache demonstrations using the pinned model. |
 | `tests/` | Smoke checks, integration diagnostics, needle retrieval, and benchmark-runner unit tests. Details below. |
@@ -34,7 +35,29 @@ vLLM / Machine A -> LMCache gRPC backend -> EvicPress / Machine B -> RAM and dis
 | `.gitattributes` | Preserves frozen benchmark bytes/hashes across Windows and Linux clones. |
 | `AGENTS.md` | Repository instructions for coding agents. `Plan.md` is the concise remaining-work roadmap, not runnable code. |
 
-The `LMCache/` tree is vendored upstream code. Project-specific changes are the gRPC plugin/protocol, head helpers, storage-manager routing/write-back, and retrieval-miss buffer cleanup; the rest is not enumerated here.
+The `LMCache/` tree is vendored upstream code. Project-specific changes are the shared EvicPress backend, local/remote transports, plugin/protocol, head helpers, storage-manager routing/write-back, and retrieval-miss buffer cleanup; the rest is not enumerated here.
+
+## Direct-local mode
+
+On the Linux GPU node, install the companion feature branch into Machine A's existing environment with `python -m pip install --no-deps -e ../evicpress-core`. This reuses the installed CUDA PyTorch; do not install Machine B's separate CPU service environment over it. Core runtime dependencies are PyTorch and PyYAML.
+
+Set `extra_config.evicpress_config_path` in `lmcache_local_config.yaml` to the absolute path of `evicpress_local_config.yaml`. Set that manager configuration's disk `data_dir` to an absolute, dedicated directory with adequate free space. Never share it with a service or another run. The OS lock rejects concurrent local writers; persisted model/revision/layout identity rejects incompatible reuse. Local mode requires one worker, worker-routed lookup and synchronous loading; scheduler bypass, PD/P2P/NIXL, MLA, multi-group, layerwise and async modes are rejected.
+
+Select it with `export LMCACHE_CONFIG_FILE="$PWD/lmcache_local_config.yaml"` before an existing manual entry point such as `python chat.py`. Local initialization is required: missing packages/configuration cannot silently disable the plugin or enable remote fallback. Set `evicpress_granularity: head` for existing per-head storage. The original `lmcache_config.yaml` and remote plugin remain available.
+
+These example configurations retain the current pilot model revision and 2 GiB CPU pool; they are **not** the planned FP16-weight/32K research baseline. Benchmark runner local profiles, official full inputs, separate replay scoring and the larger staging pool are the next phase. The CUDA-extension build blocker also remains. Do not treat the current pilot runner as a direct-local research evaluation.
+
+The manager's utility/bands/codecs are unchanged. Both paths still serialize tensors and restore complete native GPU KV; low-bit backing is lossy and does not reduce active HBM use. Prefetch is background, thread-safe and bounded. `backend.get_state()` exposes local tier state and logical call/payload counters; direct mode's RPC/network-byte counters remain zero. Internal vLLM/LMCache IPC is unaffected.
+
+GPU-free adapter regression checks run separately for now, after installing the core library:
+
+```sh
+python -m unittest discover -s tests -p test_local_evicpress.py -v
+# Include the optional real loopback control using the companion service modules:
+PYTHONPATH=../evicpress-core/machine_b python -m unittest discover -s tests -p test_local_evicpress.py -v
+```
+
+These tests use real manager, codecs and transport code, but substitute CPU objects for LMCache's GPU-dependent allocation interface. They do not validate vLLM/CUDA execution.
 
 ## What current tests cover
 
@@ -49,6 +72,7 @@ The `LMCache/` tree is vendored upstream code. Project-specific changes are the 
 | `tests/test_attention_probe.py` | One synthetic CPU check of paged-key order, GQA, causal masking, and window mass. |
 | `tests/test_new_machine_runner.py` | One GPU-free check of stage order, five-profile isolation, and passed/failed resume behavior. |
 | `tests/test_head_segments.py` | One CPU check of full-position scatter/gather, reordered heads, GQA, short chunks, missing-head rejection, byte budgets/pinning and reference release. |
+| `tests/test_local_evicpress.py` | Ten CPU adapter/selection/ownership/key-isolation/cleanup checks, including optional real loopback chunk parity. Run separately until the planned runner update. |
 
 The first five are runnable diagnostics, not a comprehensive automated correctness suite. Remote checks need Machine B; the four unit-test files do not need a GPU. B's `machine_b/tests/test_head_groups.py` checks canonical admission, leases/pressure, restart, missing heads and INT4 error bounds. With A cloned alongside B, it also runs real CPU loopback gRPC using A's client. None proves vLLM/GPU attention or recovery correctness; these checks do not measure attention mass.
 
